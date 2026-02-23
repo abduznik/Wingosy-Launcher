@@ -279,19 +279,6 @@ internal fun routeCycleDisplayRoleOverride(vm: SettingsViewModel, direction: Int
     }
 }
 
-internal fun routeCycleDualScreenInputFocus(vm: SettingsViewModel, direction: Int) {
-    val entries = com.nendo.argosy.data.preferences.DualScreenInputFocus.entries
-    val current = vm._uiState.value.controls.dualScreenInputFocus
-    val next = entries[(current.ordinal + direction + entries.size) % entries.size]
-    vm.viewModelScope.launch {
-        vm.preferencesRepository.setDualScreenInputFocus(next)
-        val sessionStore = com.nendo.argosy.data.preferences.SessionStateStore(vm.context)
-        sessionStore.setDualScreenInputFocus(next.name)
-        vm.controlsDelegate.updateState(vm._uiState.value.controls.copy(dualScreenInputFocus = next))
-        vm.displayDelegate.updateState(vm._uiState.value.display.copy(dualScreenInputFocus = next))
-    }
-}
-
 // --- Gradient cycle methods ---
 
 private inline fun updateGradientConfig(vm: SettingsViewModel, update: GradientExtractionConfig.() -> GradientExtractionConfig) {

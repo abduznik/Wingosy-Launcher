@@ -163,6 +163,10 @@ fun ArgosyApp(
         }
     }
 
+    LaunchedEffect(isOnHomeScreen) {
+        (context as? com.nendo.argosy.MainActivity)?.isOnHomeScreen = isOnHomeScreen
+    }
+
     // Handle deep links from secondary home
     val activity = context as? com.nendo.argosy.MainActivity
     val pendingDeepLink by activity?.pendingDeepLink?.collectAsState() ?: remember { mutableStateOf(null) }
@@ -693,13 +697,7 @@ fun ArgosyApp(
     LaunchedEffect(Unit) {
         viewModel.gamepadInputHandler.homeEventFlow().collect {
             if (isEmulatorRunning) {
-                // Bring emulator back and show its menu
-                context.startActivity(
-                    Intent(context, LibretroActivity::class.java).apply {
-                        action = LibretroActivity.ACTION_SHOW_MENU
-                        addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                    }
-                )
+                // No-op: onUserLeaveHint in LibretroActivity handles HOME quit
             } else {
                 // Navigate to home view (only if nav graph is ready)
                 if (navController.currentDestination != null) {

@@ -104,6 +104,28 @@ class GamepadInputHandler @Inject constructor(
         rawMotionEventListener = listener
     }
 
+    private var lastStickDirection: GamepadEvent? = null
+    private val stickDeadZone = 0.5f
+
+    fun processStickMotion(event: MotionEvent): GamepadEvent? {
+        if (event.source and InputDevice.SOURCE_JOYSTICK == 0) return null
+
+        val x = event.getAxisValue(MotionEvent.AXIS_X)
+        val y = event.getAxisValue(MotionEvent.AXIS_Y)
+
+        val direction = when {
+            y < -stickDeadZone -> GamepadEvent.Up
+            y > stickDeadZone -> GamepadEvent.Down
+            x < -stickDeadZone -> GamepadEvent.Left
+            x > stickDeadZone -> GamepadEvent.Right
+            else -> null
+        }
+
+        if (direction == lastStickDirection) return null
+        lastStickDirection = direction
+        return direction
+    }
+
     fun handleMotionEvent(event: MotionEvent): Boolean {
         rawMotionEventListener?.let { listener ->
             return listener(event)
@@ -176,5 +198,13 @@ fun mapKeycodeToGamepadEvent(
     KeyEvent.KEYCODE_BUTTON_THUMBR -> GamepadEvent.RightStickClick
     KeyEvent.KEYCODE_HOME -> GamepadEvent.Home
 
+    else -> null
+}
+
+fun gamepadEventToKeyCode(event: GamepadEvent): Int? = when (event) {
+    GamepadEvent.Up -> KeyEvent.KEYCODE_DPAD_UP
+    GamepadEvent.Down -> KeyEvent.KEYCODE_DPAD_DOWN
+    GamepadEvent.Left -> KeyEvent.KEYCODE_DPAD_LEFT
+    GamepadEvent.Right -> KeyEvent.KEYCODE_DPAD_RIGHT
     else -> null
 }

@@ -894,6 +894,19 @@ private fun SettingsFooter(uiState: SettingsUiState, shaderStack: ShaderStackSta
             add(InputButton.A to "Select")
         }
         if (uiState.currentSection == SettingsSection.EMULATORS) {
+            val emuLayoutInfo = com.nendo.argosy.ui.screens.settings.sections.createEmulatorsLayoutInfo(
+                platforms = uiState.emulators.platforms,
+                canAutoAssign = uiState.emulators.canAutoAssign,
+                builtinLibretroEnabled = uiState.emulators.builtinLibretroEnabled
+            )
+            val focusedItem = com.nendo.argosy.ui.screens.settings.sections.emulatorsItemAtFocusIndex(
+                uiState.focusedIndex, emuLayoutInfo
+            )
+            if (focusedItem is com.nendo.argosy.ui.screens.settings.sections.EmulatorsItem.PlatformItem &&
+                focusedItem.config.showDisplayTargetOption
+            ) {
+                add(InputButton.LB_RB to "Display")
+            }
             add(InputButton.X to "Saves")
         }
         if (uiState.currentSection == SettingsSection.BUILTIN_VIDEO && !uiState.builtinVideo.isGlobalContext) {

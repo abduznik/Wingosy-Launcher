@@ -458,7 +458,6 @@ class SettingsViewModel @Inject constructor(
     fun setAppAffinityEnabled(enabled: Boolean) = routeSetAppAffinityEnabled(this, enabled)
 
     fun cycleDisplayRoleOverride(direction: Int = 1) = routeCycleDisplayRoleOverride(this, direction)
-    fun cycleDualScreenInputFocus(direction: Int = 1) = routeCycleDualScreenInputFocus(this, direction)
 
     fun setSoundVolume(volume: Int) = soundsDelegate.setSoundVolume(viewModelScope, volume)
 

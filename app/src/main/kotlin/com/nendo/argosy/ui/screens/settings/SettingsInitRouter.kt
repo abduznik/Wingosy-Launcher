@@ -406,7 +406,6 @@ internal fun routeLoadSettings(vm: SettingsViewModel) {
             hasScreenCapturePermission = vm.displayDelegate.hasScreenCapturePermission(),
             hasSecondaryDisplay = vm.displayAffinityHelper.hasSecondaryDisplay,
             displayRoleOverride = prefs.displayRoleOverride,
-            dualScreenInputFocus = prefs.dualScreenInputFocus,
             installedOnlyHome = prefs.installedOnlyHome
         ))
 
@@ -427,8 +426,7 @@ internal fun routeLoadSettings(vm: SettingsViewModel) {
             swapXY = prefs.swapXY,
             swapStartSelect = prefs.swapStartSelect,
             accuratePlayTimeEnabled = prefs.accuratePlayTimeEnabled,
-            hasSecondaryDisplay = vm.displayAffinityHelper.hasSecondaryDisplay,
-            dualScreenInputFocus = prefs.dualScreenInputFocus
+            hasSecondaryDisplay = vm.displayAffinityHelper.hasSecondaryDisplay
         ))
         vm.controlsDelegate.refreshUsageStatsPermission()
 

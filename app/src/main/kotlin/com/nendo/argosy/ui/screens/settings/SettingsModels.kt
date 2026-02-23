@@ -29,7 +29,6 @@ import com.nendo.argosy.data.preferences.SystemIconPosition
 import com.nendo.argosy.data.preferences.ThemeMode
 import com.nendo.argosy.data.preferences.AmbientLedColorMode
 import com.nendo.argosy.data.preferences.DisplayRoleOverride
-import com.nendo.argosy.data.preferences.DualScreenInputFocus
 import com.nendo.argosy.data.preferences.EmulatorDisplayTarget
 import com.nendo.argosy.ui.input.SoundConfig
 import com.nendo.argosy.ui.input.SoundPreset
@@ -187,7 +186,6 @@ data class DisplayState(
     val hasScreenCapturePermission: Boolean = true,
     val hasSecondaryDisplay: Boolean = false,
     val displayRoleOverride: DisplayRoleOverride = DisplayRoleOverride.AUTO,
-    val dualScreenInputFocus: DualScreenInputFocus = DualScreenInputFocus.AUTO,
     val installedOnlyHome: Boolean = false
 )
 
@@ -203,8 +201,7 @@ data class ControlsState(
     val swapStartSelect: Boolean = false,
     val accuratePlayTimeEnabled: Boolean = false,
     val hasUsageStatsPermission: Boolean = false,
-    val hasSecondaryDisplay: Boolean = false,
-    val dualScreenInputFocus: DualScreenInputFocus = DualScreenInputFocus.AUTO
+    val hasSecondaryDisplay: Boolean = false
 )
 
 data class SoundState(

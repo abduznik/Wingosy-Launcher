@@ -315,7 +315,6 @@ class SettingsInputHandler(
                 ControlsItem.VibrationStrength -> if (state.controls.hapticEnabled && state.controls.vibrationSupported) {
                     viewModel.adjustVibrationStrength(-0.1f); return InputResult.HANDLED
                 }
-                ControlsItem.InputFocus -> { viewModel.cycleDualScreenInputFocus(-1); return InputResult.HANDLED }
                 else -> {}
             }
         }
@@ -539,7 +538,6 @@ class SettingsInputHandler(
                 ControlsItem.VibrationStrength -> if (state.controls.hapticEnabled && state.controls.vibrationSupported) {
                     viewModel.adjustVibrationStrength(0.1f); return InputResult.HANDLED
                 }
-                ControlsItem.InputFocus -> { viewModel.cycleDualScreenInputFocus(1); return InputResult.HANDLED }
                 else -> {}
             }
         }
@@ -1096,6 +1094,13 @@ class SettingsInputHandler(
 
     override fun onPrevSection(): InputResult {
         val state = viewModel.uiState.value
+        if (state.currentSection == SettingsSection.EMULATORS) {
+            val item = getEmulatorsItemAtFocus(state)
+            if (item is EmulatorsItem.PlatformItem && item.config.showDisplayTargetOption) {
+                viewModel.cycleDisplayTarget(item.config, -1)
+                return InputResult.HANDLED
+            }
+        }
         when (state.currentSection) {
             SettingsSection.SHADER_STACK -> {
                 if (viewModel.shaderChainManager.shaderStack.showShaderPicker) {
@@ -1149,6 +1154,13 @@ class SettingsInputHandler(
 
     override fun onNextSection(): InputResult {
         val state = viewModel.uiState.value
+        if (state.currentSection == SettingsSection.EMULATORS) {
+            val item = getEmulatorsItemAtFocus(state)
+            if (item is EmulatorsItem.PlatformItem && item.config.showDisplayTargetOption) {
+                viewModel.cycleDisplayTarget(item.config, 1)
+                return InputResult.HANDLED
+            }
+        }
         when (state.currentSection) {
             SettingsSection.SHADER_STACK -> {
                 if (viewModel.shaderChainManager.shaderStack.showShaderPicker) {

@@ -39,6 +39,7 @@ import com.nendo.argosy.hardware.ScreenCaptureManager
 import com.nendo.argosy.ui.ArgosyApp
 import com.nendo.argosy.ui.audio.AmbientAudioManager
 import com.nendo.argosy.ui.input.GamepadInputHandler
+import com.nendo.argosy.ui.input.gamepadEventToKeyCode
 import com.nendo.argosy.ui.screens.common.GameActionsDelegate
 import com.nendo.argosy.ui.screens.common.GameLaunchDelegate
 import com.nendo.argosy.ui.theme.ALauncherTheme
@@ -110,7 +111,7 @@ class MainActivity : ComponentActivity() {
         private set
     var isDualScreenDevice by mutableStateOf(false)
         private set
-    private var dualScreenInputFocus = "AUTO"
+    var isOnHomeScreen = false
 
     // --- Delegated properties for external consumers (ArgosyApp.kt) ---
 
@@ -214,7 +215,6 @@ class MainActivity : ComponentActivity() {
         isRolesSwapped = resolver.isSwapped
         isDualScreenDevice = displayAffinityHelper.hasSecondaryDisplay
         sessionStateStore.setRolesSwapped(isRolesSwapped)
-        dualScreenInputFocus = sessionStateStore.getDualScreenInputFocus()
 
         val existingDsm = DualScreenManagerHolder.instance
         if (existingDsm != null) {
@@ -266,6 +266,9 @@ class MainActivity : ComponentActivity() {
         dualScreenManager.onOverlayFocusChanged = { _ ->
             updateWindowFocusability()
         }
+        dualScreenManager.onEmulatorDispatcherChanged = {
+            updateWindowFocusability()
+        }
         dualScreenManager.registerReceivers()
         dualScreenManager.ensureCompanionLaunched()
         initCacheAndPreferences()
@@ -281,9 +284,7 @@ class MainActivity : ComponentActivity() {
             dualScreenManager = dualScreenManager,
             hasWindowFocus = ::hasWindowFocus
         )
-        preferencesObserver.collectIn(activityScope) { focus ->
-            dualScreenInputFocus = focus
-        }
+        preferencesObserver.collectIn(activityScope)
 
         setContent {
             ALauncherTheme {
@@ -320,7 +321,7 @@ class MainActivity : ComponentActivity() {
         dualScreenManager.broadcastForegroundState(true)
 
         if (emulatorSessionPolicy.shouldYieldOnResume(
-                hasResumedBefore, focusLostTime
+                hasResumedBefore, focusLostTime, packageName
             )
         ) {
             Log.d(TAG, "Persisted session found on resume - yielding to emulator")
@@ -355,7 +356,9 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         ambientAudioManager.suspend()
-        dualScreenManager.broadcastForegroundState(false)
+        if (!dualScreenManager.isCompanionActive.value) {
+            dualScreenManager.broadcastForegroundState(false)
+        }
     }
 
     override fun onDestroy() {
@@ -372,18 +375,26 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (isRolesSwapped &&
-            dualScreenManager.swappedIsGameActive.value &&
-            !isOverlayFocused
-        ) {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            Log.d(TAG, "dispatchKeyEvent: key=${event.keyCode} isHome=$isOnHomeScreen swapped=$isRolesSwapped gameOnSecondary=${dualScreenManager.swappedIsGameActive.value} companion=${dualScreenManager.isCompanionActive.value} overlay=$isOverlayFocused")
+        }
+
+        if (dualScreenManager.swappedIsGameActive.value && !isOverlayFocused) {
+            val emulatorDispatcher = dualScreenManager.emulatorKeyDispatcher
+            if (emulatorDispatcher != null) {
+                Log.d(TAG, "dispatchKeyEvent: FORWARDING key=${event.keyCode} to emulator")
+                return emulatorDispatcher(event)
+            }
             return true
         }
-        if (dualScreenManager.isCompanionActive.value &&
-            !isRolesSwapped &&
-            !isOverlayFocused &&
-            dualScreenInputFocus == "TOP"
+
+        if (!isRolesSwapped &&
+            isOnHomeScreen &&
+            dualScreenManager.isCompanionActive.value &&
+            !isOverlayFocused
         ) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                Log.d(TAG, "dispatchKeyEvent: FORWARDING key=${event.keyCode} to companion")
                 dualScreenManager.companionHost?.onForwardKey(
                     event.keyCode,
                     sessionStateStore.getSwapAB(),
@@ -393,7 +404,10 @@ class MainActivity : ComponentActivity() {
             }
             return true
         }
-        if (dualScreenInputFocus == "BOTTOM") return super.dispatchKeyEvent(event)
+
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            Log.d(TAG, "dispatchKeyEvent: LOCAL handling key=${event.keyCode}")
+        }
         if (event.action == KeyEvent.ACTION_DOWN) {
             ambientAudioManager.resumeFromSuspend()
         }
@@ -412,23 +426,42 @@ class MainActivity : ComponentActivity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_DOWN) {
             ambientAudioManager.resumeFromSuspend()
-            if (dualScreenManager.isCompanionActive.value &&
-                !isOverlayFocused &&
-                !isRolesSwapped
-            ) {
-                dualScreenManager.companionHost?.refocusSelf()
-            }
         }
         return super.dispatchTouchEvent(event)
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (isRolesSwapped &&
-            dualScreenManager.swappedIsGameActive.value &&
-            !isOverlayFocused
-        ) {
+        if (dualScreenManager.swappedIsGameActive.value && !isOverlayFocused) {
+            val emulatorDispatcher = dualScreenManager.emulatorMotionDispatcher
+            if (emulatorDispatcher != null) {
+                return emulatorDispatcher(event)
+            }
             return true
         }
+
+        val stickEvent = gamepadInputHandler.processStickMotion(event)
+        if (stickEvent != null) {
+            if (!isRolesSwapped &&
+                isOnHomeScreen &&
+                dualScreenManager.isCompanionActive.value &&
+                !isOverlayFocused
+            ) {
+                val keyCode = gamepadEventToKeyCode(stickEvent)
+                if (keyCode != null) {
+                    dualScreenManager.companionHost?.onForwardKey(
+                        keyCode,
+                        sessionStateStore.getSwapAB(),
+                        sessionStateStore.getSwapXY(),
+                        sessionStateStore.getSwapStartSelect()
+                    )
+                }
+                return true
+            }
+
+            gamepadInputHandler.injectEvent(stickEvent)
+            return true
+        }
+
         if (gamepadInputHandler.handleMotionEvent(event)) {
             return true
         }
@@ -442,7 +475,6 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         Log.d(TAG, "onWindowFocusChanged: hasFocus=$hasFocus swapped=$isRolesSwapped gameActive=${if (::dualScreenManager.isInitialized) dualScreenManager.swappedIsGameActive.value else "N/A"}")
         if (hasFocus &&
-            isRolesSwapped &&
             ::dualScreenManager.isInitialized &&
             dualScreenManager.swappedIsGameActive.value &&
             !isOverlayFocused
@@ -527,10 +559,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateWindowFocusability() {
-        val shouldBlock = isRolesSwapped &&
-            dualScreenManager.swappedIsGameActive.value &&
+        val gameActive = dualScreenManager.swappedIsGameActive.value &&
             !isOverlayFocused
-        Log.d(TAG, "updateWindowFocusability: shouldBlock=$shouldBlock (swapped=$isRolesSwapped gameActive=${dualScreenManager.swappedIsGameActive.value} overlay=$isOverlayFocused)")
+        val hasEmulatorDispatcher =
+            dualScreenManager.emulatorKeyDispatcher != null
+        val shouldBlock = gameActive && !hasEmulatorDispatcher
+        Log.d(TAG, "updateWindowFocusability: shouldBlock=$shouldBlock (gameActive=$gameActive hasDispatcher=$hasEmulatorDispatcher)")
         if (shouldBlock) {
             window.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         } else {

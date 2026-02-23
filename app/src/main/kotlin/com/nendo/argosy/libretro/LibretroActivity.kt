@@ -164,6 +164,11 @@ class LibretroActivity : ComponentActivity() {
         enableEdgeToEdge()
         enterImmersiveMode()
 
+        com.nendo.argosy.DualScreenManagerHolder.instance?.let { dsm ->
+            dsm.emulatorKeyDispatcher = { event -> dispatchKeyEvent(event) }
+            dsm.emulatorMotionDispatcher = { event -> dispatchGenericMotionEvent(event) }
+        }
+
         if (!parseIntentExtras()) return
 
         val romFile = File(romPath)
@@ -949,7 +954,8 @@ class LibretroActivity : ComponentActivity() {
 
         if (shouldFilterShoulderButton(keyCode)) return true
 
-        return retroView.onKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
+        val handled = retroView.onKeyDown(keyCode, event)
+        return handled || super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
@@ -989,10 +995,18 @@ class LibretroActivity : ComponentActivity() {
         }
     }
 
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        com.nendo.argosy.DualScreenManagerHolder.instance
+            ?.onSessionChanged(-1L)
+        finish()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == ACTION_SHOW_MENU) {
-            showMenu()
+        when (intent.action) {
+            ACTION_SHOW_MENU -> showMenu()
+            ACTION_QUIT -> finish()
         }
     }
 
@@ -1011,11 +1025,17 @@ class LibretroActivity : ComponentActivity() {
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy: isFinishing=$isFinishing, isChangingConfigurations=$isChangingConfigurations")
+        com.nendo.argosy.DualScreenManagerHolder.instance?.let { dsm ->
+            dsm.emulatorKeyDispatcher = null
+            dsm.emulatorMotionDispatcher = null
+        }
         raSession?.destroy()
         if (videoSettings.rewindEnabled && !hardcoreMode) {
             retroView.destroyRewindBuffer()
         }
         if (isFinishing && gameId != -1L) {
+            com.nendo.argosy.DualScreenManagerHolder.instance
+                ?.onSessionChanged(-1L)
             kotlinx.coroutines.GlobalScope.launch { playSessionTracker.endSession() }
         }
         super.onDestroy()
@@ -1058,6 +1078,7 @@ class LibretroActivity : ComponentActivity() {
         const val EXTRA_GAME_ID = "game_id"
         const val EXTRA_CORE_NAME = "core_name"
         const val ACTION_SHOW_MENU = "com.nendo.argosy.action.SHOW_MENU"
+        const val ACTION_QUIT = "com.nendo.argosy.action.QUIT"
 
         private val PLATFORMS_WITHOUT_SHOULDERS = setOf(
             "gb", "gbc",

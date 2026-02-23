@@ -277,7 +277,6 @@ void LibretroDroid::onTouchEvent(float xAxis, float yAxis) {
 }
 
 void LibretroDroid::onKeyEvent(unsigned int port, int action, int keyCode) {
-    LOGD("Received key event with action (%d) and keycode (%d)", action, keyCode);
     if (input) {
         input->onKeyEvent(port, action, keyCode);
     }
@@ -477,8 +476,6 @@ void LibretroDroid::pause() {
 }
 
 void LibretroDroid::step() {
-    LOGD("Stepping into retro_run()");
-
     unsigned frames = 1;
     if (fpsSync) {
         unsigned requestedFrames = fpsSync->advanceFrames();
@@ -487,8 +484,9 @@ void LibretroDroid::step() {
         frames = std::min(requestedFrames, 2u);
     }
 
-    for (size_t i = 0; i < frames * frameSpeed; i++)
+    for (size_t i = 0; i < frames * frameSpeed; i++) {
         core->retro_run();
+    }
 
     if (achievements.isActive()) {
         achievements.evaluateFrame();
@@ -664,6 +662,10 @@ int16_t LibretroDroid::handleSetInputState(
     unsigned int index,
     unsigned int id
 ) {
+    static int hCallCount = 0;
+    if (++hCallCount % 3600 == 1) {
+        LOGI("handleSetInputState: hasInput=%d port=%u device=%u (call #%d)", input != nullptr, port, device, hCallCount);
+    }
     if (input) {
         return input->getInputState(port, device, index, id);
     }
@@ -730,14 +732,14 @@ void LibretroDroid::afterGameLoad() {
 
     auto& controllers = Environment::getInstance().getControllers();
     for (unsigned port = 0; port < controllers.size() && port < 4; port++) {
-        if (!controllers[port].empty()) {
-            unsigned deviceType = controllers[port][0].id;
-            LOGD("Setting controller port %u to device type %u (%s)",
-                 port, deviceType, controllers[port][0].description.c_str());
-            core->retro_set_controller_port_device(port, deviceType);
-        } else {
-            core->retro_set_controller_port_device(port, RETRO_DEVICE_JOYPAD);
+        unsigned deviceType = RETRO_DEVICE_JOYPAD;
+        for (const auto& ctrl : controllers[port]) {
+            if (ctrl.id != RETRO_DEVICE_NONE) {
+                deviceType = ctrl.id;
+                break;
+            }
         }
+        core->retro_set_controller_port_device(port, deviceType);
     }
 
     LOGI("afterGameLoad: base=%ux%u max=%ux%u aspect=%.4f default=%.4f",

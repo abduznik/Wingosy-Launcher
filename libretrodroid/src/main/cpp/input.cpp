@@ -16,6 +16,7 @@
  */
 
 #include "input.h"
+#include "log.h"
 
 #include <cmath>
 

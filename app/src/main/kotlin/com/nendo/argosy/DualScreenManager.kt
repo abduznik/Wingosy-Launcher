@@ -44,6 +44,8 @@ import com.nendo.argosy.hardware.SecondaryHomeActivity
 import com.nendo.argosy.util.DisplayAffinityHelper
 import com.nendo.argosy.util.SecondaryDisplayType
 import kotlinx.coroutines.CoroutineScope
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -81,6 +83,7 @@ class DualScreenManager(
 ) {
 
     private val appContext: Context = context.applicationContext
+    private var preGameRolesSwapped: Boolean? = null
     private var activityContext: Context = context
 
     fun rebind(activity: android.app.Activity, newScope: CoroutineScope) {
@@ -114,6 +117,13 @@ class DualScreenManager(
     }
 
     var companionHost: CompanionHost? = null
+    var onEmulatorDispatcherChanged: (() -> Unit)? = null
+    var emulatorKeyDispatcher: ((android.view.KeyEvent) -> Boolean)? = null
+        set(value) {
+            field = value
+            onEmulatorDispatcherChanged?.invoke()
+        }
+    var emulatorMotionDispatcher: ((android.view.MotionEvent) -> Boolean)? = null
 
     var emulatorDisplayId: Int? = null
     private var isLaunchingGame = false
@@ -640,15 +650,25 @@ class DualScreenManager(
             }
             companionHost?.onSessionStarted(gameId, isHardcore, channelName)
         } else {
+            if (!_swappedIsGameActive.value) return
             emulatorDisplayId = null
             _swappedIsGameActive.value = false
             _swappedCompanionState.value = com.nendo.argosy.hardware.CompanionInGameState()
+            sessionStateStore.clearSession()
             swappedSessionTimer?.stop(appContext)
             swappedSessionTimer = null
             val savedDetailGameId = sessionStateStore.getDetailGameId()
             if (savedDetailGameId > 0) selectGameSwapped(savedDetailGameId)
-            companionHost?.onSessionEnded()
-            companionHost?.onRoleSwapped(isRolesSwapped)
+            val savedSwapped = preGameRolesSwapped
+            if (savedSwapped != null) {
+                isRolesSwapped = savedSwapped
+                preGameRolesSwapped = null
+            }
+            Handler(Looper.getMainLooper()).post {
+                if (savedSwapped != null) onRoleSwapped?.invoke(savedSwapped)
+                companionHost?.onSessionEnded()
+                companionHost?.onRoleSwapped(isRolesSwapped)
+            }
         }
     }
 
@@ -962,6 +982,9 @@ class DualScreenManager(
                     else activityContext.startActivity(intent)
 
                     if (effectiveSwapped != isRolesSwapped) {
+                        preGameRolesSwapped = isRolesSwapped
+                        isRolesSwapped = effectiveSwapped
+                        onRoleSwapped?.invoke(effectiveSwapped)
                         companionHost?.onRoleSwapped(effectiveSwapped)
                     }
                 }

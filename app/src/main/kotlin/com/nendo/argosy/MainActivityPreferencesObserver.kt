@@ -19,7 +19,7 @@ class MainActivityPreferencesObserver(
     private var previousHomeApps: Set<String>? = null
     private var previousPrimaryColor: Int? = null
 
-    fun collectIn(scope: CoroutineScope, onInputFocusChanged: (String) -> Unit) {
+    fun collectIn(scope: CoroutineScope) {
         scope.launch {
             preferencesRepository.preferences.collect { prefs ->
                 Logger.configure(
@@ -63,10 +63,6 @@ class MainActivityPreferencesObserver(
                     swapXY = prefs.swapXY,
                     swapStartSelect = prefs.swapStartSelect
                 )
-
-                val focusName = prefs.dualScreenInputFocus.name
-                onInputFocusChanged(focusName)
-                sessionStateStore.setDualScreenInputFocus(focusName)
             }
         }
     }

@@ -82,7 +82,6 @@ class SecondaryHomeActivity :
     private var xyIconsSwapped by mutableStateOf(false)
     private var startSelectSwapped by mutableStateOf(false)
 
-    private var dualScreenInputFocus = "AUTO"
 
     private lateinit var broadcasts: SecondaryHomeBroadcastHelper
     private lateinit var inputHandler: SecondaryHomeInputHandler
@@ -269,15 +268,13 @@ class SecondaryHomeActivity :
             }
             return super.onKeyDown(keyCode, event)
         }
-        if (dualScreenInputFocus == "TOP") return super.onKeyDown(keyCode, event)
-
         if (event.repeatCount == 0) {
             val gamepadEvent = mapKeycodeToGamepadEvent(
                 keyCode, swapAB, swapXY, swapStartSelect
             )
             if (gamepadEvent != null) {
                 val result = inputHandler.routeInput(
-                    gamepadEvent, useDualScreenMode, isArgosyForeground,
+                    gamepadEvent, useDualScreenMode, true,
                     isGameActive, currentScreen
                 )
                 if (result.handled) return true
@@ -375,7 +372,7 @@ class SecondaryHomeActivity :
 
     override fun onForwardKey(keyCode: Int, swapAB: Boolean, swapXY: Boolean, swapStartSelect: Boolean) {
         val gamepadEvent = mapKeycodeToGamepadEvent(keyCode, swapAB, swapXY, swapStartSelect) ?: return
-        inputHandler.routeInput(gamepadEvent, useDualScreenMode, isArgosyForeground, isGameActive, currentScreen)
+        inputHandler.routeInput(gamepadEvent, useDualScreenMode, true, isGameActive, currentScreen)
     }
 
     override fun refocusSelf() = startActivity(
@@ -595,7 +592,6 @@ class SecondaryHomeActivity :
         swapAB = inputSwap.swapAB
         swapXY = inputSwap.swapXY
         swapStartSelect = inputSwap.swapStartSelect
-        dualScreenInputFocus = inputSwap.dualScreenInputFocus
         abIconsSwapped = inputSwap.abIconsSwapped
         xyIconsSwapped = inputSwap.xyIconsSwapped
         startSelectSwapped = inputSwap.startSelectSwapped

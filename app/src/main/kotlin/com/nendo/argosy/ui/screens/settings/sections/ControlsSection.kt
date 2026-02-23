@@ -33,14 +33,9 @@ internal sealed class ControlsItem(
     data object SwapAB : ControlsItem("swapAB")
     data object SwapXY : ControlsItem("swapXY")
     data object SwapStartSelect : ControlsItem("swapStartSelect")
-    data object InputFocus : ControlsItem(
-        key = "inputFocus",
-        visibleWhen = { it.hasSecondaryDisplay }
-    )
-
     companion object {
         val ALL: List<ControlsItem> = listOf(
-            InputFocus, HapticFeedback, VibrationStrength, ControllerLayout,
+            HapticFeedback, VibrationStrength, ControllerLayout,
             SwapAB, SwapXY, SwapStartSelect
         )
     }
@@ -144,12 +139,6 @@ fun ControlsSection(uiState: SettingsUiState, viewModel: SettingsViewModel) {
                     onToggle = { viewModel.setSwapStartSelect(it) }
                 )
 
-                ControlsItem.InputFocus -> CyclePreference(
-                    title = "Input Focus",
-                    value = controls.dualScreenInputFocus.displayName,
-                    isFocused = isFocused(item),
-                    onClick = { viewModel.cycleDualScreenInputFocus() }
-                )
             }
         }
     }

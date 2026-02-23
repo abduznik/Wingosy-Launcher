@@ -336,7 +336,6 @@ private fun routeControlsConfirm(vm: SettingsViewModel, state: SettingsUiState):
         ControlsItem.SwapAB -> { vm.setSwapAB(!state.controls.swapAB); return InputResult.handled(SoundType.TOGGLE) }
         ControlsItem.SwapXY -> { vm.setSwapXY(!state.controls.swapXY); return InputResult.handled(SoundType.TOGGLE) }
         ControlsItem.SwapStartSelect -> { vm.setSwapStartSelect(!state.controls.swapStartSelect); return InputResult.handled(SoundType.TOGGLE) }
-        ControlsItem.InputFocus -> { vm.cycleDualScreenInputFocus(); return InputResult.HANDLED }
         null -> {}
     }
     return InputResult.HANDLED

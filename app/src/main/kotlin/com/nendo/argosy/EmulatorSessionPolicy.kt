@@ -52,13 +52,15 @@ class EmulatorSessionPolicy(
 
     fun shouldYieldOnResume(
         hasResumedBefore: Boolean,
-        focusLostTime: Long
+        focusLostTime: Long,
+        appPackage: String
     ): Boolean {
         if (!hasResumedBefore) return false
         if (sessionStateStore.isRolesSwapped()) return false
-        runBlocking {
+        val session = runBlocking {
             preferencesRepository.getPersistedSession()
         } ?: return false
+        if (session.emulatorPackage == appPackage) return false
         val timeSinceFocusLost =
             System.currentTimeMillis() - focusLostTime
         return focusLostTime > 0 && timeSinceFocusLost < 2000
@@ -69,6 +71,7 @@ class EmulatorSessionPolicy(
         dualScreenManager: DualScreenManager
     ) {
         if (sessionStateStore.isRolesSwapped()) return
+        if (dualScreenManager.emulatorDisplayId != null) return
         runBlocking {
             preferencesRepository.getPersistedSession()
         } ?: return

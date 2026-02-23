@@ -420,7 +420,6 @@ class GLRetroView(
     // These functions are called only after the GLSurfaceView has been created.
     private inner class RenderLifecycleObserver : LifecycleObserver {
         fun manualResume() = catchExceptions {
-            Log.d(TAG_LOG, "RenderLifecycleObserver.manualResume() called")
             LibretroDroid.resume()
             onResume()
             isEmulationReady = true
@@ -428,7 +427,6 @@ class GLRetroView(
 
         @OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
         private fun resume() = catchExceptions {
-            Log.d(TAG_LOG, "RenderLifecycleObserver.resume() lifecycle event")
             if (!isEmulationReady) {
                 LibretroDroid.resume()
                 onResume()
@@ -438,7 +436,6 @@ class GLRetroView(
 
         @OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         private fun pause() = catchExceptions {
-            Log.d(TAG_LOG, "RenderLifecycleObserver.pause() lifecycle event")
             isEmulationReady = false
             onPause()
             LibretroDroid.pause()
