@@ -457,14 +457,19 @@ class SecondaryHomeActivity :
         }
     }
 
-    override fun onSaveDataReceived(json: String, activeChannel: String?, activeTimestamp: Long?) {
+    override fun onSaveDataReceived(json: String, activeChannel: String?, activeTimestamp: Long?, syncing: Boolean) {
         val vm = dualGameDetailViewModel ?: return
         try {
             val entries = parseSaveEntryDataList(json)
             vm.loadUnifiedSaves(entries, activeChannel, activeTimestamp)
+            vm.setSyncing(syncing)
         } catch (e: Exception) {
             android.util.Log.e("SecondaryHome", "Failed to parse save data", e)
         }
+    }
+
+    override fun onSavesSyncDone() {
+        dualGameDetailViewModel?.setSyncing(false)
     }
 
     override fun onDownloadCompleted(gameId: Long) {

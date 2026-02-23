@@ -33,6 +33,15 @@ class GetUnifiedSavesUseCase @Inject constructor(
         return sortEntries(entries)
     }
 
+    suspend fun localOnly(gameId: Long): List<UnifiedSaveEntry> {
+        val localCaches = saveCacheManager.getCachesForGameOnce(gameId)
+        val romBaseName = gameDao.getById(gameId)?.localPath?.let {
+            File(it).nameWithoutExtension
+        }
+        val entries = mergeEntries(localCaches, emptyList(), romBaseName)
+        return sortEntries(entries)
+    }
+
     private fun mergeEntries(
         localCaches: List<SaveCacheEntity>,
         serverSaves: List<RomMSave>,

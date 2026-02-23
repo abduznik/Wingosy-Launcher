@@ -93,6 +93,7 @@ fun DualGameDetailLowerScreen(
     selectedOptionIndex: Int,
     savesLoading: Boolean = false,
     savesApplying: Boolean = false,
+    savesSyncing: Boolean = false,
     isDimmed: Boolean = false,
     onDimTapped: () -> Unit = {},
     onTabChanged: (DualGameDetailTab) -> Unit,
@@ -130,6 +131,7 @@ fun DualGameDetailLowerScreen(
                         selectedHistoryIndex = selectedHistoryIndex,
                         isLoading = savesLoading,
                         isApplying = savesApplying,
+                        isSyncing = savesSyncing,
                         onSlotTapped = onSlotTapped,
                         onHistoryTapped = onHistoryTapped
                     )
@@ -218,6 +220,7 @@ private fun SavesTabContent(
     selectedHistoryIndex: Int,
     isLoading: Boolean,
     isApplying: Boolean,
+    isSyncing: Boolean = false,
     onSlotTapped: (Int) -> Unit,
     onHistoryTapped: (Int) -> Unit
 ) {
@@ -236,32 +239,45 @@ private fun SavesTabContent(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            SaveSlotsColumn(
-                slots = slots,
-                selectedIndex = selectedSlotIndex,
-                isFocused = focusColumn == SaveFocusColumn.SLOTS,
-                onSlotTapped = onSlotTapped,
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (isSyncing) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                )
+            }
+            Row(
                 modifier = Modifier
-                    .weight(0.4f)
-                    .fillMaxHeight()
-            )
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                SaveSlotsColumn(
+                    slots = slots,
+                    selectedIndex = selectedSlotIndex,
+                    isFocused = focusColumn == SaveFocusColumn.SLOTS,
+                    onSlotTapped = onSlotTapped,
+                    modifier = Modifier
+                        .weight(0.4f)
+                        .fillMaxHeight()
+                )
 
-            VerticalDivider(
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
-            )
+                VerticalDivider(
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                )
 
-            SaveHistoryColumn(
-                history = history,
-                selectedIndex = selectedHistoryIndex,
-                isFocused = focusColumn == SaveFocusColumn.HISTORY,
-                slotName = slots.getOrNull(selectedSlotIndex)
-                    ?.let { if (it.isCreateAction) null else it.displayName },
-                onHistoryTapped = onHistoryTapped,
-                modifier = Modifier
-                    .weight(0.6f)
-                    .fillMaxHeight()
-            )
+                SaveHistoryColumn(
+                    history = history,
+                    selectedIndex = selectedHistoryIndex,
+                    isFocused = focusColumn == SaveFocusColumn.HISTORY,
+                    slotName = slots.getOrNull(selectedSlotIndex)
+                        ?.let { if (it.isCreateAction) null else it.displayName },
+                    onHistoryTapped = onHistoryTapped,
+                    modifier = Modifier
+                        .weight(0.6f)
+                        .fillMaxHeight()
+                )
+            }
         }
 
         if (isApplying) {

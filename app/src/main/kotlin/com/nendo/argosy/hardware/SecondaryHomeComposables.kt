@@ -377,6 +377,7 @@ fun DualGameDetailContent(
     val activeModal by viewModel.activeModal.collectAsState()
     val savesLoading by viewModel.savesLoading.collectAsState()
     val savesApplying by viewModel.savesApplying.collectAsState()
+    val savesSyncing by viewModel.savesSyncing.collectAsState()
 
     DualGameDetailLowerScreen(
         state = state,
@@ -390,6 +391,7 @@ fun DualGameDetailContent(
         selectedOptionIndex = selectedOptionIndex,
         savesLoading = savesLoading,
         savesApplying = savesApplying,
+        savesSyncing = savesSyncing,
         isDimmed = activeModal != ActiveModal.NONE,
         onDimTapped = onDimTapped,
         onTabChanged = { viewModel.setTab(it) },

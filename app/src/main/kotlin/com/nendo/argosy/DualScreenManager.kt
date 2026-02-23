@@ -112,7 +112,8 @@ class DualScreenManager(
         fun onScreenshotCleared()
         fun onModalResult(dismissed: Boolean, type: String?, value: Int, statusSelected: String?, selectedIndex: Int, collectionToggleId: Long, collectionCreateName: String?)
         fun onDirectActionResult(type: String, gameId: Long)
-        fun onSaveDataReceived(json: String, activeChannel: String?, activeTimestamp: Long?)
+        fun onSaveDataReceived(json: String, activeChannel: String?, activeTimestamp: Long?, syncing: Boolean = false)
+        fun onSavesSyncDone()
         fun onDownloadCompleted(gameId: Long)
     }
 
@@ -1162,28 +1163,55 @@ class DualScreenManager(
     }
 
     private fun broadcastUnifiedSaves(gameId: Long) {
-        scope.launch(Dispatchers.IO) {
+        scope.launch(Dispatchers.Default) {
             try {
-                val entries = getUnifiedSavesUseCase(gameId)
-                val entryData = entries.map { it.toSaveEntryData() }
                 val game = gameDao.getById(gameId)
+                val activeChannel = game?.activeSaveChannel
+                val activeTimestamp = game?.activeSaveTimestamp
 
-                _swappedGameDetailViewModel?.let { vm ->
-                    if (vm.uiState.value.gameId == gameId) {
-                        vm.loadUnifiedSaves(
-                            entryData,
-                            game?.activeSaveChannel,
-                            game?.activeSaveTimestamp
-                        )
-                    }
-                }
-
-                val json = entryData.toJsonString()
-                companionHost?.onSaveDataReceived(json, game?.activeSaveChannel, game?.activeSaveTimestamp)
+                val localEntries = getUnifiedSavesUseCase.localOnly(gameId)
+                val localData = localEntries.map { it.toSaveEntryData() }
+                deliverSaves(gameId, localData, activeChannel, activeTimestamp, syncing = true)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to broadcast unified saves", e)
+                Log.e(TAG, "Failed to load local saves", e)
             }
         }
+        scope.launch(Dispatchers.IO) {
+            try {
+                val game = gameDao.getById(gameId)
+                val fullEntries = getUnifiedSavesUseCase(gameId)
+                val fullData = fullEntries.map { it.toSaveEntryData() }
+                deliverSaves(gameId, fullData, game?.activeSaveChannel, game?.activeSaveTimestamp, syncing = false)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to sync remote saves", e)
+                deliverSyncingDone(gameId)
+            }
+        }
+    }
+
+    private fun deliverSaves(
+        gameId: Long,
+        entryData: List<com.nendo.argosy.ui.dualscreen.gamedetail.SaveEntryData>,
+        activeChannel: String?,
+        activeTimestamp: Long?,
+        syncing: Boolean
+    ) {
+        _swappedGameDetailViewModel?.let { vm ->
+            if (vm.uiState.value.gameId == gameId) {
+                vm.loadUnifiedSaves(entryData, activeChannel, activeTimestamp)
+                vm.setSyncing(syncing)
+            }
+        }
+
+        val json = entryData.toJsonString()
+        companionHost?.onSaveDataReceived(json, activeChannel, activeTimestamp, syncing)
+    }
+
+    private fun deliverSyncingDone(gameId: Long) {
+        _swappedGameDetailViewModel?.let { vm ->
+            if (vm.uiState.value.gameId == gameId) vm.setSyncing(false)
+        }
+        companionHost?.onSavesSyncDone()
     }
 
     // --- Companion Sync ---

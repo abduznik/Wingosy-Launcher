@@ -73,6 +73,9 @@ class DualGameDetailViewModel(
     private val _savesApplying = MutableStateFlow(false)
     val savesApplying: StateFlow<Boolean> = _savesApplying.asStateFlow()
 
+    private val _savesSyncing = MutableStateFlow(false)
+    val savesSyncing: StateFlow<Boolean> = _savesSyncing.asStateFlow()
+
     private val _saveHistory = MutableStateFlow<List<SaveHistoryItem>>(emptyList())
     val saveHistory: StateFlow<List<SaveHistoryItem>> = _saveHistory.asStateFlow()
 
@@ -480,6 +483,10 @@ class DualGameDetailViewModel(
 
     fun reloadSaves() {
         _savesLoading.value = true
+    }
+
+    fun setSyncing(syncing: Boolean) {
+        _savesSyncing.value = syncing
     }
 
     fun setActiveChannel(channelName: String?) {
