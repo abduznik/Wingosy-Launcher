@@ -1298,15 +1298,14 @@ class DualScreenManager(
         _swappedGameDetailViewModel = vm
         _swappedCurrentScreen.value = com.nendo.argosy.hardware.CompanionScreen.GAME_DETAIL
         sessionStateStore.setCompanionScreen("GAME_DETAIL", gameId)
-        companionHost?.onGameDetailOpened(gameId)
-        broadcastUnifiedSaves(gameId)
+        handleGameDetailOpened(gameId)
     }
 
     fun returnToHomeSwapped() {
         _swappedGameDetailViewModel = null
         _swappedCurrentScreen.value = com.nendo.argosy.hardware.CompanionScreen.HOME
         sessionStateStore.setCompanionScreen("HOME")
-        companionHost?.onGameDetailClosed()
+        onGameDetailClosed()
         swappedDualHomeViewModel?.refresh()
     }
 
