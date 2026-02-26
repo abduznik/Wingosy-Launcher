@@ -20,10 +20,9 @@ import androidx.core.app.NotificationCompat
 import com.nendo.argosy.MainActivity
 import com.nendo.argosy.R
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -36,7 +35,7 @@ class ScreenCaptureService : Service() {
     @Inject
     lateinit var ambientLedManager: AmbientLedManager
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val serviceScope = SafeCoroutineScope(Dispatchers.Default, "ScreenCaptureService")
     private var captureJob: Job? = null
 
     private var mediaProjection: MediaProjection? = null

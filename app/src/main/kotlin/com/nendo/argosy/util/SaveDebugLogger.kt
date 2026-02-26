@@ -1,9 +1,8 @@
 package com.nendo.argosy.util
 
 import android.util.Log as AndroidLog
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
@@ -18,7 +17,7 @@ import java.time.format.DateTimeFormatter
 object SaveDebugLogger {
     private const val TAG = "SaveDebugLogger"
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "SaveDebugLogger")
     private val logChannel = Channel<SaveLogEntry>(Channel.BUFFERED)
 
     private var fileWriter: FileWriter? = null

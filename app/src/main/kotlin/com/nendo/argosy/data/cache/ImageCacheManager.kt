@@ -14,9 +14,8 @@ import com.nendo.argosy.data.local.dao.AchievementDao
 import com.nendo.argosy.data.local.dao.GameDao
 import com.nendo.argosy.data.local.dao.PlatformDao
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -126,7 +125,7 @@ class ImageCacheManager @Inject constructor(
     private val logoQueue = Channel<PlatformLogoCacheRequest>(256)
     private val coverQueue = Channel<ImageCacheRequest>(256)
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "ImageCacheManager")
     private val queue = Channel<ImageCacheRequest>(256)
     private val screenshotQueue = Channel<ScreenshotCacheRequest>(256)
     private var isProcessing = false
@@ -288,7 +287,7 @@ class ImageCacheManager @Inject constructor(
             } finally {
                 tempFile.delete()
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to download image from $url: ${e.javaClass.simpleName}: ${e.message}", e)
             null
         }
@@ -511,10 +510,17 @@ class ImageCacheManager @Inject constructor(
 
                 val bitmap = downloadAndResize(url, 480) ?: return@forEachIndexed
 
-                FileOutputStream(cachedFile).use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 75, out)
+                try {
+                    FileOutputStream(cachedFile).use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 75, out)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to write screenshot cache for gameId $gameId: ${e.message}", e)
+                    cachedFile.delete()
+                    return@forEachIndexed
+                } finally {
+                    bitmap.recycle()
                 }
-                bitmap.recycle()
 
                 if (!isValidImageFile(cachedFile)) {
                     cachedFile.delete()

@@ -2,9 +2,8 @@ package com.nendo.argosy.data.download
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -17,7 +16,7 @@ class DownloadServiceController @Inject constructor(
     private val downloadManager: DownloadManager,
     private val thermalManager: DownloadThermalManager
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = SafeCoroutineScope(Dispatchers.Main, "DownloadServiceController")
     private var isServiceRunning = false
 
     fun start() {

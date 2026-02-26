@@ -21,11 +21,10 @@ import com.nendo.argosy.data.emulator.EmulatorResolver
 import com.nendo.argosy.data.emulator.M3uManager
 import com.nendo.argosy.DualScreenManagerHolder
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -147,7 +146,7 @@ class DownloadManager @Inject constructor(
     private val _completionEvents = MutableSharedFlow<DownloadCompletionEvent>()
     val completionEvents: SharedFlow<DownloadCompletionEvent> = _completionEvents.asSharedFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = SafeCoroutineScope(Dispatchers.Main, "DownloadManager")
     private val downloadJobs = mutableMapOf<Long, Job>()
 
     private val defaultDownloadDir: File by lazy {

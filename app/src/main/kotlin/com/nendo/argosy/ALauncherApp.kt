@@ -21,16 +21,15 @@ import com.nendo.argosy.libretro.CoreUpdateCheckWorker
 import com.nendo.argosy.libretro.LibretroCoreManager
 import com.nendo.argosy.ui.coil.AppIconFetcher
 import dagger.hilt.android.HiltAndroidApp
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltAndroidApp
 class ArgosyApp : Application(), Configuration.Provider, ImageLoaderFactory {
 
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val appScope = SafeCoroutineScope(Dispatchers.IO, "ArgosyApp")
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory

@@ -14,10 +14,9 @@ import androidx.core.app.NotificationCompat
 import com.nendo.argosy.DualScreenManagerHolder
 import com.nendo.argosy.MainActivity
 import com.nendo.argosy.R
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -41,7 +40,7 @@ class CompanionGuardService : Service() {
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = SafeCoroutineScope(Dispatchers.Main, "CompanionGuardService")
     private var observerJob: Job? = null
     private val handler = Handler(Looper.getMainLooper())
     private var displayManager: DisplayManager? = null

@@ -5,9 +5,8 @@ import com.nendo.argosy.util.Logger
 import com.nendo.argosy.data.emulator.EmulatorResolver
 import com.nendo.argosy.data.local.dao.GameDao
 import com.nendo.argosy.data.repository.SaveSyncRepository
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,7 +20,7 @@ class SaveSyncDownloadObserver @Inject constructor(
     private val gameDao: GameDao,
     private val emulatorResolver: EmulatorResolver
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "SaveSyncDownloadObserver")
 
     fun start() {
         scope.launch {

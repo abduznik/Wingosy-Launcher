@@ -4,9 +4,8 @@ import android.content.Context
 import com.nendo.argosy.data.remote.romm.RomMRepository
 import com.nendo.argosy.data.repository.SaveSyncRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -19,7 +18,7 @@ class SyncServiceController @Inject constructor(
     private val saveSyncRepository: SaveSyncRepository,
     private val romMRepository: RomMRepository
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = SafeCoroutineScope(Dispatchers.Main, "SyncServiceController")
     private var isServiceRunning = false
 
     fun start() {

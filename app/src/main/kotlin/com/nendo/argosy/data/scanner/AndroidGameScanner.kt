@@ -13,9 +13,8 @@ import com.nendo.argosy.data.remote.playstore.PlayStoreAppDetails
 import com.nendo.argosy.data.remote.playstore.PlayStoreService
 import com.nendo.argosy.data.repository.AppsRepository
 import com.nendo.argosy.data.repository.InstalledApp
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,7 +58,7 @@ class AndroidGameScanner @Inject constructor(
     private val platformDao: PlatformDao,
     private val imageCacheManager: ImageCacheManager
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "AndroidGameScanner")
     private val _progress = MutableStateFlow(AndroidScanProgress())
     val progress: StateFlow<AndroidScanProgress> = _progress.asStateFlow()
 

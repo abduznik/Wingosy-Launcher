@@ -1,10 +1,9 @@
 package com.nendo.argosy.ui.notification
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,7 +19,7 @@ private const val DEBOUNCE_DELAY_MS = 500L
 @Singleton
 class NotificationManager @Inject constructor() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = SafeCoroutineScope(Dispatchers.Main, "NotificationManager")
     private val pendingByKey = mutableMapOf<String, Job>()
 
     private val _notifications = MutableStateFlow<List<Notification>>(emptyList())

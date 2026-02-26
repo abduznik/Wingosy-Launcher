@@ -10,9 +10,8 @@ import androidx.core.app.NotificationCompat
 import com.nendo.argosy.MainActivity
 import com.nendo.argosy.R
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -24,7 +23,7 @@ class DownloadForegroundService : Service() {
     @Inject
     lateinit var downloadManager: DownloadManager
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val serviceScope = SafeCoroutineScope(Dispatchers.Main, "DownloadForegroundService")
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {

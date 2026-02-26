@@ -3,9 +3,8 @@ package com.nendo.argosy.data.emulator
 import com.nendo.argosy.data.download.DownloadManager
 import com.nendo.argosy.data.local.dao.GameDao
 import com.nendo.argosy.util.Logger
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
@@ -24,7 +23,7 @@ class TitleIdDownloadObserver @Inject constructor(
     private val titleIdExtractor: TitleIdExtractor,
     private val emulatorResolver: EmulatorResolver
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "TitleIdDownloadObserver")
 
     fun start() {
         scope.launch {

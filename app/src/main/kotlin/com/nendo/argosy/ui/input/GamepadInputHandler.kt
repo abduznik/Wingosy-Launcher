@@ -4,9 +4,8 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import com.nendo.argosy.data.preferences.UserPreferencesRepository
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -50,7 +49,7 @@ class GamepadInputHandler @Inject constructor(
 
     private val _events = MutableSharedFlow<GamepadEvent>(extraBufferCapacity = 16)
     private val _homeEvents = Channel<Unit>(Channel.BUFFERED)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = SafeCoroutineScope(Dispatchers.Main.immediate, "GamepadInputHandler")
 
     var homeEventEnabled: Boolean = true
 

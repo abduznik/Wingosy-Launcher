@@ -49,9 +49,8 @@ import com.nendo.argosy.util.DisplayAffinityHelper
 import com.nendo.argosy.util.DisplayRoleResolver
 import com.nendo.argosy.util.PermissionHelper
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -96,7 +95,7 @@ class MainActivity : ComponentActivity() {
     private val sessionStateStore by lazy {
         com.nendo.argosy.data.preferences.SessionStateStore(this)
     }
-    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val activityScope = SafeCoroutineScope(Dispatchers.Main, "MainActivity")
 
     private lateinit var emulatorSessionPolicy: EmulatorSessionPolicy
     private lateinit var preferencesObserver: MainActivityPreferencesObserver

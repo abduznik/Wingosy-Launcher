@@ -28,9 +28,8 @@ import com.nendo.argosy.ui.notification.NotificationType
 import com.nendo.argosy.DualScreenManagerHolder
 import com.nendo.argosy.ui.screens.common.GameUpdateBus
 import com.nendo.argosy.util.PermissionHelper
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -95,7 +94,7 @@ class PlaySessionTracker @Inject constructor(
         private const val TAG = "PlaySessionTracker"
         private const val MIN_PLAY_SECONDS_FOR_COMPLETION = 20
     }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "PlaySessionTracker")
     private val sessionStateStore by lazy { SessionStateStore(application) }
 
     private fun broadcastSessionChanged(gameId: Long?, channelName: String?, isHardcore: Boolean) {

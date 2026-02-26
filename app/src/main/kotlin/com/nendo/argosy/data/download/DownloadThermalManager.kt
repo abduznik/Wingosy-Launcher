@@ -5,10 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,7 +36,7 @@ class DownloadThermalManager @Inject constructor(
     private val _thermalStatus = MutableStateFlow(ThermalStatus())
     val thermalStatus: StateFlow<ThermalStatus> = _thermalStatus.asStateFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "DownloadThermalManager")
     private var monitorJob: Job? = null
     private var fanRefreshJob: Job? = null
     private var isScreenOff = false

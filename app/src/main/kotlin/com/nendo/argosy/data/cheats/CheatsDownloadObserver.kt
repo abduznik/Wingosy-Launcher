@@ -3,9 +3,8 @@ package com.nendo.argosy.data.cheats
 import com.nendo.argosy.data.download.DownloadManager
 import com.nendo.argosy.data.local.dao.GameDao
 import com.nendo.argosy.util.Logger
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,7 +17,7 @@ class CheatsDownloadObserver @Inject constructor(
     private val cheatsRepository: dagger.Lazy<CheatsRepository>,
     private val gameDao: GameDao
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "CheatsDownloadObserver")
 
     fun start() {
         scope.launch {

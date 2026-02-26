@@ -10,9 +10,8 @@ import androidx.core.content.FileProvider
 import com.nendo.argosy.data.update.AppInstaller
 import com.nendo.argosy.ui.screens.settings.EmulatorDownloadState
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,7 +40,7 @@ class EmulatorDownloadManager @Inject constructor(
     private val appInstaller: AppInstaller,
     private val emulatorUpdateManager: EmulatorUpdateManager
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "EmulatorDownloadManager")
 
     private val _downloadProgress = MutableStateFlow<EmulatorDownloadProgress?>(null)
     val downloadProgress: StateFlow<EmulatorDownloadProgress?> = _downloadProgress.asStateFlow()

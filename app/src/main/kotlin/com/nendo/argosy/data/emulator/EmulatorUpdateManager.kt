@@ -12,9 +12,8 @@ import com.nendo.argosy.data.local.entity.EmulatorUpdateEntity
 import com.nendo.argosy.data.remote.github.EmulatorUpdateCheckResult
 import com.nendo.argosy.data.remote.github.EmulatorUpdateRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +50,7 @@ class EmulatorUpdateManager @Inject constructor(
         private val LAST_CHECK_KEY = longPreferencesKey("emulator_update_last_check")
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = SafeCoroutineScope(Dispatchers.IO, "EmulatorUpdateManager")
 
     private val _checkState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
     val checkState: StateFlow<UpdateCheckState> = _checkState.asStateFlow()

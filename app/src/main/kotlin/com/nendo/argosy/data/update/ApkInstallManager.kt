@@ -15,9 +15,8 @@ import com.nendo.argosy.data.local.dao.GameDao
 import com.nendo.argosy.data.model.GameSource
 import com.nendo.argosy.data.platform.LocalPlatformIds
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,7 +48,7 @@ class ApkInstallManager @Inject constructor(
     private val appInstaller: AppInstaller,
     private val imageCacheManager: ImageCacheManager
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = SafeCoroutineScope(Dispatchers.Main, "ApkInstallManager")
 
     private val _state = MutableStateFlow<ApkInstallState>(ApkInstallState.Idle)
     val state: StateFlow<ApkInstallState> = _state.asStateFlow()

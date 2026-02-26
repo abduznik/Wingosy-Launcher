@@ -38,9 +38,8 @@ import com.nendo.argosy.data.repository.SaveCacheManager
 import com.nendo.argosy.DualScreenManagerHolder
 import com.nendo.argosy.util.Logger
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
+import com.nendo.argosy.util.SafeCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
@@ -52,7 +51,7 @@ class GameSessionService : Service() {
     @Inject lateinit var saveCacheManager: SaveCacheManager
     @Inject lateinit var gameDao: GameDao
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val serviceScope = SafeCoroutineScope(Dispatchers.IO, "GameSessionService")
     private val handler = Handler(Looper.getMainLooper())
     private val fileObservers = mutableListOf<FileObserver>()
     private val sessionStateStore by lazy { SessionStateStore(this) }
