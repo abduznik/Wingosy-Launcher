@@ -1,7 +1,6 @@
 import requests
 import os
 import time
-import json
 from pathlib import Path
 
 class RomMClient:
@@ -9,12 +8,21 @@ class RomMClient:
         self.host = host.rstrip('/')
         self.token = None
         self.user_games = []
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
 
     def login(self, username, password):
         try:
             url = f"{self.host}/api/token"
-            data = {"username": username, "password": password}
-            r = requests.post(url, data=data, timeout=10)
+            scope = "me.read me.write platforms.read roms.read assets.read assets.write roms.user.read roms.user.write collections.read collections.write"
+            data = {
+                "grant_type": "password",
+                "username": username,
+                "password": password,
+                "scope": scope
+            }
+            r = requests.post(url, data=data, headers=self.headers, timeout=10)
             if r.status_code == 200:
                 self.token = r.json()["access_token"]
                 return True, self.token
@@ -22,29 +30,53 @@ class RomMClient:
         except Exception as e:
             return False, str(e)
 
-    def get_headers(self):
-        return {"Authorization": f"Bearer {self.token}"}
+    def get_auth_headers(self):
+        h = self.headers.copy()
+        if self.token:
+            h["Authorization"] = f"Bearer {self.token}"
+        return h
 
     def fetch_library(self):
         try:
             url = f"{self.host}/api/roms"
-            params = {"page": 1, "page_size": 5000}
-            r = requests.get(url, headers=self.get_headers(), params=params, timeout=15)
+            # Match original working version params
+            params = {"page": 1, "page_size": 5000, "size": 1000}
+            r = requests.get(url, headers=self.get_auth_headers(), params=params, timeout=15)
             if r.status_code == 200:
                 self.user_games = r.json().get("items", [])
                 return self.user_games
+            print(f"[API] Error fetching library ({r.status_code})")
             return []
-        except:
+        except Exception as e:
+            print(f"[API] Exception fetching library: {e}")
             return []
 
     def get_cover_url(self, game):
-        # RomM usually serves covers at /api/raw/covers/{id}
+        """Returns a valid URL for the game cover, preferring local RomM assets."""
+        path = game.get('path_cover_large') or game.get('path_cover_small') 
+        if path:
+            return path if path.startswith('http') else f"{self.host}{path}"
+        url = game.get('url_cover')
+        if url:
+            if url.startswith('//'):
+                return f"https:{url}"
+            return url
+        # Fallback to direct ID path if all else fails
         return f"{self.host}/api/raw/covers/{game['id']}"
 
     def download_rom(self, rom_id, file_name, target_path, progress_cb=None, is_cancelled=None):
         try:
-            url = f"{self.host}/api/roms/{rom_id}/download"
-            r = requests.get(url, headers=self.get_headers(), stream=True, timeout=30)
+            # Reverting to the URL structure from the working version
+            from urllib.parse import quote
+            encoded_name = quote(file_name)
+            url = f"{self.host}/api/roms/{rom_id}/content/{encoded_name}"
+            
+            r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
+            if r.status_code != 200:
+                # Fallback to /download path
+                url = f"{self.host}/api/roms/{rom_id}/download"
+                r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
+
             total = int(r.headers.get('content-length', 0))
             downloaded = 0
             start = time.time()
@@ -57,7 +89,7 @@ class RomMClient:
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if progress_cb:
+                        if progress_cb and total > 0:
                             elapsed = time.time() - start
                             speed = downloaded / elapsed if elapsed > 0 else 0
                             progress_cb(downloaded, total, speed)
@@ -67,57 +99,81 @@ class RomMClient:
 
     def get_latest_save(self, rom_id):
         try:
+            # Trying both /api/roms/{id}/saves and /api/saves
             url = f"{self.host}/api/roms/{rom_id}/saves"
-            r = requests.get(url, headers=self.get_headers(), timeout=10)
+            r = requests.get(url, headers=self.get_auth_headers(), timeout=10)
+            
+            if r.status_code != 200:
+                url = f"{self.host}/api/saves"
+                r = requests.get(url, headers=self.get_auth_headers(), params={"rom_id": rom_id}, timeout=10)
+
             if r.status_code == 200:
-                saves = r.json()
-                if saves:
-                    # Sort by created_at descending
-                    saves.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-                    return saves[0]
+                data = r.json()
+                items = data if isinstance(data, list) else data.get("items", [])
+                if items:
+                    # Sort by ID descending (newest first)
+                    items.sort(key=lambda x: x.get('id', 0), reverse=True)
+                    return items[0]
             return None
         except:
             return None
 
     def download_save(self, save_item, target_path):
         try:
-            url = f"{self.host}/api/raw/assets/{save_item['path']}"
-            r = requests.get(url, headers=self.get_headers(), stream=True, timeout=30)
-            with open(target_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            return True
+            path = save_item.get('download_path') or save_item.get('path')
+            url = path if path.startswith('http') else f"{self.host}{path}"
+            r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
+            if r.status_code == 200:
+                with open(target_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                return True
+            return False
         except:
             return False
 
     def upload_save(self, rom_id, emulator, file_path):
         try:
-            url = f"{self.host}/api/roms/saves/upload"
-            files = {'file': open(file_path, 'rb')}
+            url = f"{self.host}/api/saves"
             params = {"rom_id": rom_id, "emulator": emulator, "slot": "wingosy-windows"}
-            r = requests.post(url, headers=self.get_headers(), files=files, data=params, timeout=60)
-            if r.status_code in [200, 201]:
-                return True, "Success"
-            return False, r.json().get("detail", "Upload failed")
+            
+            with open(file_path, 'rb') as f:
+                files = {'saveFile': (os.path.basename(file_path), f, 'application/octet-stream')}
+                r = requests.post(url, params=params, headers=self.get_auth_headers(), files=files, timeout=60)
+                return r.status_code in [200, 201], r.text
         except Exception as e:
             return False, str(e)
 
     def get_firmware(self):
         try:
-            url = f"{self.host}/api/firmwares"
-            r = requests.get(url, headers=self.get_headers(), timeout=15)
+            url = f"{self.host}/api/platforms"
+            r = requests.get(url, headers=self.get_auth_headers(), timeout=15)
             if r.status_code == 200:
-                return r.json()
+                platforms = r.json()
+                firmware_list = []
+                for p in platforms:
+                    fws = p.get('firmware', [])
+                    for f in fws:
+                        f['platform_name'] = p.get('name')
+                        f['platform_slug'] = p.get('slug')
+                        f['platform_id'] = p.get('id')
+                        firmware_list.append(f)
+                return firmware_list
             return []
         except:
             return []
 
     def download_firmware(self, fw_item, target_path, progress_cb=None):
         try:
-            # Firmwares are stored in assets
-            url = f"{self.host}/api/raw/assets/{fw_item['path']}"
-            r = requests.get(url, headers=self.get_headers(), stream=True, timeout=30)
+            path = fw_item.get('download_path')
+            if not path:
+                slug = fw_item.get('platform_slug', 'unknown')
+                name = fw_item.get('file_name')
+                path = f"/api/raw/assets/firmware/{slug}/{name}"
+
+            url = path if path.startswith('http') else f"{self.host}{path}"
+            r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
             total = int(r.headers.get('content-length', 0))
             downloaded = 0
             start = time.time()

@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import copy
 from pathlib import Path
 
 class ConfigManager:
@@ -87,40 +88,59 @@ class ConfigManager:
         self.config_dir = Path.home() / ".wingosy"
         self.config_file = self.config_dir / "config.json"
         
-        # MIGRATION LOGIC
+        # MIGRATION LOGIC: Be extremely thorough to restore user data
         old_dir = Path.home() / ".argosy"
         if old_dir.exists():
-            # If .wingosy doesn't exist OR it's just a fresh empty folder (no config.json)
+            should_migrate = False
             if not self.config_dir.exists() or not self.config_file.exists():
+                should_migrate = True
+            else:
+                # If .wingosy exists but paths are still defaults, it was a failed rebranding attempt
+                try:
+                    with open(self.config_file, 'r', encoding='utf-8') as f:
+                        current = json.load(f)
+                        # Check if critical paths are default or if host is default
+                        if "Games" in current.get("base_rom_path", "") or current.get("host") == "http://localhost:8285":
+                            should_migrate = True
+                except:
+                    should_migrate = True
+
+            if should_migrate:
                 try:
                     if self.config_dir.exists():
                         shutil.rmtree(self.config_dir)
                     shutil.copytree(old_dir, self.config_dir)
-                    print(f"Successfully migrated data from {old_dir} to {self.config_dir}")
+                    print(f"Successfully migrated all settings and library from {old_dir}")
                 except Exception as e:
                     print(f"Migration error: {e}")
 
-        self.data = self.DEFAULT_CONFIG.copy()
+        # Load fresh copy of default config
+        self.data = copy.deepcopy(self.DEFAULT_CONFIG)
         self.load()
 
     def load(self):
         if self.config_file.exists():
             try:
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     loaded_data = json.load(f)
+                    
+                    # 1. Restore all top-level settings (Host, Paths, User, etc.)
                     for k, v in loaded_data.items():
                         if k != "emulators":
                             self.data[k] = v
                     
-                    # Smart Merge Emulators
+                    # 2. Clean Host URL
+                    if self.data["host"]:
+                        self.data["host"] = self.data["host"].rstrip('/')
+
+                    # 3. Smart Merge Emulators (Restore paths while allowing metadata updates)
                     loaded_emus = loaded_data.get("emulators", {})
-                    for name, new_data in self.DEFAULT_CONFIG["emulators"].items():
-                        # Try to find user's custom path from any previous version of this emulator
+                    for name, current_cfg in self.data["emulators"].items():
                         for old_name, old_data in loaded_emus.items():
-                            if old_data.get("exe") == new_data["exe"]:
-                                new_data["path"] = old_data.get("path", "")
+                            if old_data.get("exe") == current_cfg["exe"]:
+                                # Restore the user's custom emulator path
+                                current_cfg["path"] = old_data.get("path", "")
                                 break
-                        self.data["emulators"][name] = new_data
             except Exception as e:
                 print(f"Error loading config: {e}")
         else:
@@ -129,7 +149,7 @@ class ConfigManager:
     def save(self):
         self.config_dir.mkdir(parents=True, exist_ok=True)
         try:
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, indent=4)
         except Exception as e:
             print(f"Error saving config: {e}")

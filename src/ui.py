@@ -25,6 +25,7 @@ except ImportError:
 def get_resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
@@ -69,12 +70,13 @@ class UpdaterThread(QThread):
     def run(self):
         try:
             api_url = "https://api.github.com/repos/abduznik/Wingosy-Launcher/releases/latest"
-            resp = requests.get(api_url, timeout=10).json()
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            resp = requests.get(api_url, headers=headers, timeout=10).json()
             latest_version = resp.get("tag_name", "").replace("v", "")
             if latest_version and latest_version != self.current_version:
                 download_url = ""
                 for asset in resp.get("assets", []):
-                    if asset["name"].endswith(".exe"):
+                    if asset["name"].lower().endswith(".exe"):
                         download_url = asset["browser_download_url"]
                         break
                 self.finished.emit(True, latest_version, download_url)
@@ -173,11 +175,11 @@ class ImageFetcher(QThread):
         self.url = url
     def run(self):
         try:
-            r = requests.get(self.url, timeout=10)
+            r = requests.get(self.url, timeout=15)
             if r.status_code == 200:
                 img = QImage()
-                img.loadFromData(r.content)
-                self.finished.emit(self.game_id, QPixmap.fromImage(img))
+                if img.loadFromData(r.content):
+                    self.finished.emit(self.game_id, QPixmap.fromImage(img))
         except:
             pass
 
@@ -235,7 +237,7 @@ class BaseDownloader(QThread):
                     except: pass
                 
                 if not extracted:
-                    # Try system tar (Windows 10/11 has it built-in and supports .7z usually)
+                    # Try system tar
                     try:
                         subprocess.run(['tar', '-xf', file_path, '-C', dest_dir], check=True)
                         extracted = True
@@ -269,7 +271,6 @@ class DolphinDownloader(BaseDownloader):
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
             resp = requests.get(api_url, timeout=15, headers=headers)
             if resp.status_code != 200:
-                # Fallback to a hardcoded version if API fails
                 download_url = "https://dl.dolphin-emu.org/releases/2512/dolphin-2512-x64.7z"
             else:
                 data = resp.json()
@@ -278,7 +279,6 @@ class DolphinDownloader(BaseDownloader):
             ok, msg = self.perform_download(download_url, self.target_dir)
             self.finished.emit(ok, msg)
         except Exception as e:
-            # Final fallback
             download_url = "https://dl.dolphin-emu.org/releases/2512/dolphin-2512-x64.7z"
             ok, msg = self.perform_download(download_url, self.target_dir)
             self.finished.emit(ok, msg)
