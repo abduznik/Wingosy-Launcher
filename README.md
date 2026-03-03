@@ -1,5 +1,7 @@
 # Argosy Desktop Launcher
 
+A Windows port of the original [Argosy Launcher for Android](https://github.com/rommapp/argosy-launcher).
+
 Argosy is a lightweight, portable Windows game launcher designed to bridge the gap between your local emulators and a RomM server. It features automated cloud save syncing, portable emulator management, and a unified library interface.
 
 ## Key Features
@@ -29,6 +31,24 @@ Note: Only PlayStation 2 and Nintendo Switch have been fully tested and verified
 - GameCube / Wii: Dolphin - In Progress
 - Multi-system: RetroArch - In Progress
 - And more... (easily extensible via config.json)
+
+## Project Roadmap
+
+### Current Status
+- Tested and Stable: PlayStation 2 (PCSX2), Nintendo Switch (Yuzu/Eden).
+- In Progress: Dolphin (GC/Wii), RetroArch (Multi-system).
+
+### Planned Features
+- Expanded Emulator Support: Verify and stabilize path resolution for Dolphin, RPCS3, and Citra.
+- RetroArch Intelligence: Logic to automatically select/download the correct core based on RomM platform metadata.
+- Conflict Resolution: A simple UI prompt to choose between Keep Local or Use Cloud if both have changed since last sync.
+- System Tray Notifications: Native Windows notifications for sync success, failures, or background tracking status.
+- UI Polish:
+    - Smooth transitions between Library and Emulator tabs.
+    - Detailed game view with screenshots and metadata from RomM.
+    - Download queue manager for multiple ROM/BIOS downloads.
+- Auto-Update: Self-updating capability for the Argosy.exe itself.
+- Custom Emulator Profiles: Allow users to add their own custom emulator definitions via the UI.
 
 ## Building from Source
 
