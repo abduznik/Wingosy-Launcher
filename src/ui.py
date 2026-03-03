@@ -302,7 +302,7 @@ class GameDetailDialog(QDialog):
         
         # PLAY BUTTON
         self.play_btn = QPushButton("▶ PLAY")
-        self.play_btn.setStyleSheet("background: #2196f3; color: white; font-weight: bold; padding: 10px; font-size: 14pt;")
+        self.play_btn.setStyleSheet("background: #1e88e5; color: white; font-weight: bold; padding: 10px; font-size: 14pt;")
         self.play_btn.clicked.connect(self.play_game)
         dt.addWidget(self.play_btn)
 
@@ -437,7 +437,7 @@ class ArgosyMainWindow(QMainWindow):
         self.setCentralWidget(c)
         l = QVBoxLayout(c)
         h = QHBoxLayout()
-        h.addWidget(QLabel("<h1 style='color: #2196f3;'>Argosy Launcher</h1>"))
+        h.addWidget(QLabel("<h1 style='color: #1e88e5;'>Argosy Launcher</h1>"))
         h.addStretch()
         self.tr_btn = QPushButton("START TRACKING")
         self.tr_btn.setFixedSize(150, 35)
@@ -467,7 +467,7 @@ class ArgosyMainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabBar::tab { background: #2d2d2d; color: white; padding: 10px; }
-            QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #2196f3; }
+            QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #1e88e5; }
         """)
         
         self.gw = QWidget()
@@ -511,7 +511,7 @@ class ArgosyMainWindow(QMainWindow):
         self.tabs.addTab(self.et, "🛠️ Emulators")
         self.la = QTextEdit()
         self.la.setReadOnly(True)
-        self.la.setStyleSheet("background: #121212; color: #42a5f5; font-family: Consolas;")
+        self.la.setStyleSheet("background: #121212; color: #bbdefb; font-family: Consolas;")
         self.tabs.addTab(self.la, "📝 Logs")
         l.addWidget(self.tabs)
         self.pop_lib()

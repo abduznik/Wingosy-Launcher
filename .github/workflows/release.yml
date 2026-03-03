@@ -19,12 +19,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 psutil requests py7zr pyinstaller
+          pip install PySide6 psutil requests py7zr pyinstaller Pillow
           
       - name: Build EXE
         run: |
-          # --add-data "icon.png;." adds the icon to the bundled resources
-          # --icon "icon.png" sets the file icon for the EXE
+          # Pillow is now installed, so PyInstaller can convert icon.png to .ico automatically
           pyinstaller --noconsole --onefile --name Argosy --icon "icon.png" --add-data "icon.png;." main.py
           
       - name: Release
