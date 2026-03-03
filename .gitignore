@@ -1,56 +1,45 @@
-# Environment
-.env
-*.env.local
-
-# Signing
-keystore.properties
-*.jks
-*.keystore
-
-# Test credentials
-romm-test.properties
-
-# Android/Gradle
-*.iml
-.gradle/
-local.properties
-.idea/
-*.hprof
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
-captures/
-.externalNativeBuild/
-.cxx/
-*.apk
-*.aab
-*.ap_
-*.dex
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Kotlin
-*.class
-*.log
-*.jar
-!gradle/wrapper/gradle-wrapper.jar
-*.war
-*.nar
-*.ear
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv/
+
+# Argosy local data
+sync_cache.json
+cloud_check_file
 *.zip
-*.tar.gz
-*.rar
+*.bak
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Test outputs
-/test-results/
-/coverage/
-
-# Claude Code
-.claude/
-.plan/
-.ref/
-.refs/
-.research/
-
-# Wiki (separate repo)
-wiki/
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
