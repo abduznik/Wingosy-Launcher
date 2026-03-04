@@ -94,12 +94,11 @@ class ConfigManager:
             if not self.config_dir.exists() or not self.config_file.exists():
                 should_migrate = True
             else:
-                # If .wingosy exists but paths are still defaults, it was a failed rebranding attempt
+                # If .wingosy exists but host is still default, it was a failed rebranding attempt
                 try:
                     with open(self.config_file, 'r', encoding='utf-8') as f:
                         current = json.load(f)
-                        # Check if critical paths are default or if host is default
-                        if "Games" in current.get("base_rom_path", "") or current.get("host") == "http://localhost:8285":
+                        if current.get("host") == "http://localhost:8285":
                             should_migrate = True
                 except:
                     should_migrate = True
@@ -157,5 +156,8 @@ class ConfigManager:
         return self.data.get(key, default)
 
     def set(self, key, value):
-        self.data[key] = value
+        if value is None:
+            self.data.pop(key, None)
+        else:
+            self.data[key] = value
         self.save()

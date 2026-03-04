@@ -5,7 +5,7 @@ from src.api import RomMClient
 from src.watcher import WingosyWatcher
 from src.ui import WingosyMainWindow, SetupDialog
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 
 def main():
     app = QApplication(sys.argv)
@@ -13,6 +13,15 @@ def main():
     app.setOrganizationName("Wingosy")
     app.setQuitOnLastWindowClosed(False) # For system tray
     app.setStyle("Fusion")
+    
+    # Cleanup old executable from previous update
+    try:
+        current_exe = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else Path(sys.argv[0]).resolve()
+        old_exe = current_exe.parent / "Wingosy_old.exe"
+        if old_exe.exists():
+            old_exe.unlink(missing_ok=True)
+    except Exception:
+        pass
     
     config = ConfigManager()
     

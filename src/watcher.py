@@ -21,6 +21,9 @@ class WingosyWatcher(QThread):
         self.active_sessions = {}
         self.skip_next_pull_rom_id = None # Flag to prevent double-pull when launching from app
         
+        self.tmp_dir = Path.home() / ".wingosy" / "tmp"
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        
         self.cache_path = Path.home() / ".wingosy" / "sync_cache.json"
         self.sync_cache = {}
         if self.cache_path.exists():
@@ -71,8 +74,7 @@ class WingosyWatcher(QThread):
             save_path = self.resolve_save_path(emu_display_name, title, full_cmd, emu_path, platform, proc=psutil.Process(pid))
             
             if not save_path:
-                # Retry once after a short delay in case files aren't open yet
-                time.sleep(2)
+                # Retry immediately once
                 save_path = self.resolve_save_path(emu_display_name, title, full_cmd, emu_path, platform, proc=psutil.Process(pid))
 
             if save_path:
@@ -123,7 +125,7 @@ class WingosyWatcher(QThread):
             self.log_signal.emit(f"☁️ Cloud save ({save_id}) already applied.")
             return
 
-        temp_dl = "cloud_check_file"
+        temp_dl = str(self.tmp_dir / f"cloud_check_{rom_id}")
         if self.client.download_save(latest_save, temp_dl):
             is_zip = zipfile.is_zipfile(temp_dl)
             if is_zip:
@@ -439,7 +441,7 @@ class WingosyWatcher(QThread):
                 return
 
             self.log_signal.emit(f"📝 Changes detected! Syncing...")
-            temp_zip = f"sync_{data['rom_id']}.zip"
+            temp_zip = str(self.tmp_dir / f"sync_{data['rom_id']}.zip")
             try:
                 zip_path(str(save_path), temp_zip)
                 success, msg = self.client.upload_save(data['rom_id'], data['emu'], temp_zip)

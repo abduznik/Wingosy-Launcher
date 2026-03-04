@@ -95,6 +95,44 @@ class UpdaterThread(QThread):
         except Exception:
             self.finished.emit(False, "", "")
 
+class SelfUpdateThread(QThread):
+    progress = Signal(int)
+    finished = Signal(bool, str)
+
+    def __init__(self, download_url, current_exe_path):
+        super().__init__()
+        self.download_url = download_url
+        self.current_exe_path = current_exe_path
+
+    def run(self):
+        temp_exe = self.current_exe_path.parent / "Wingosy_update.exe"
+        try:
+            r = requests.get(self.download_url, stream=True, timeout=60)
+            r.raise_for_status()
+            total = int(r.headers.get('content-length', 0))
+            downloaded = 0
+            with open(temp_exe, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            self.progress.emit(int((downloaded / total) * 100))
+            
+            # Backup current exe
+            old_exe = self.current_exe_path.parent / "Wingosy_old.exe"
+            if old_exe.exists():
+                old_exe.unlink()
+            
+            os.rename(self.current_exe_path, old_exe)
+            os.rename(temp_exe, self.current_exe_path)
+            
+            self.finished.emit(True, "Update downloaded successfully.")
+        except Exception as e:
+            if temp_exe.exists():
+                temp_exe.unlink()
+            self.finished.emit(False, str(e))
+
 class SettingsDialog(QDialog):
     def __init__(self, config_manager, main_window, parent=None):
         super().__init__(parent)
@@ -102,46 +140,52 @@ class SettingsDialog(QDialog):
         self.config = config_manager
         self.main_window = main_window
         self.resize(400, 450)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"<b>RomM Host:</b> {self.config.get('host')}"))
-        layout.addWidget(QLabel(f"<b>User:</b> {self.config.get('username')}"))
-        layout.addWidget(QLabel(f"<b>Version:</b> {self.main_window.version}"))
+        self.layout = QVBoxLayout(self)
+        self.layout.addWidget(QLabel(f"<b>RomM Host:</b> {self.config.get('host')}"))
+        self.layout.addWidget(QLabel(f"<b>User:</b> {self.config.get('username')}"))
+        self.layout.addWidget(QLabel(f"<b>Version:</b> {self.main_window.version}"))
         
         self.auto_pull_btn = QPushButton("Auto Pull Saves: ON" if self.config.get("auto_pull_saves", True) else "Auto Pull Saves: OFF")
         self.auto_pull_btn.setCheckable(True)
         self.auto_pull_btn.setChecked(self.config.get("auto_pull_saves", True))
         self.auto_pull_btn.toggled.connect(self.toggle_auto_pull)
-        layout.addWidget(self.auto_pull_btn)
+        self.layout.addWidget(self.auto_pull_btn)
         
-        layout.addWidget(QLabel("<b>Preferred Switch Emulator:</b>"))
+        self.layout.addWidget(QLabel("<b>Preferred Switch Emulator:</b>"))
         self.switch_pref = QComboBox()
         self.switch_pref.addItems(["Switch (Eden)", "Switch (Yuzu)"])
         prefs = self.config.get("preferred_emulators", {})
         current = prefs.get("switch", "Switch (Eden)")
         self.switch_pref.setCurrentText(current)
         self.switch_pref.currentTextChanged.connect(self.set_switch_pref)
-        layout.addWidget(self.switch_pref)
+        self.layout.addWidget(self.switch_pref)
         
-        layout.addSpacing(10)
+        self.layout.addSpacing(10)
         self.update_btn = QPushButton("Check for Updates")
         self.update_btn.clicked.connect(self.check_updates)
-        layout.addWidget(self.update_btn)
+        self.layout.addWidget(self.update_btn)
         
         self.upgrade_btn = QPushButton("Upgrade Available!")
         self.upgrade_btn.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold;")
         self.upgrade_btn.setVisible(False)
-        layout.addWidget(self.upgrade_btn)
+        self.layout.addWidget(self.upgrade_btn)
+
+        self.update_pbar = QProgressBar()
+        self.update_pbar.setVisible(False)
+        self.layout.addWidget(self.update_pbar)
         
-        layout.addStretch()
+        self.layout.addStretch()
         
         self.logout_btn = QPushButton("Log Out")
         self.logout_btn.setStyleSheet("background-color: #c62828; color: white; padding: 8px;")
         self.logout_btn.clicked.connect(self.do_logout)
-        layout.addWidget(self.logout_btn)
+        self.layout.addWidget(self.logout_btn)
         
         buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.layout.addWidget(buttons)
+
+        self.latest_version_url = ""
 
     def toggle_auto_pull(self, checked):
         self.config.set("auto_pull_saves", checked)
@@ -163,15 +207,48 @@ class SettingsDialog(QDialog):
         self.update_btn.setEnabled(True)
         self.update_btn.setText("Check for Updates")
         if available:
+            self.latest_version_url = url
             self.upgrade_btn.setText(f"Upgrade to v{version}")
             self.upgrade_btn.setVisible(True)
             try: self.upgrade_btn.clicked.disconnect()
             except Exception: pass
-            self.upgrade_btn.clicked.connect(lambda: webbrowser.open(url))
+            
+            if getattr(sys, 'frozen', False):
+                self.upgrade_btn.clicked.connect(self.start_self_update)
+            else:
+                self.upgrade_btn.clicked.connect(lambda: webbrowser.open(url))
         else:
             QMessageBox.information(self, "No Updates", "You are running the latest version.")
 
+    def start_self_update(self):
+        self.upgrade_btn.setEnabled(False)
+        self.upgrade_btn.setText("Downloading update...")
+        self.update_pbar.setVisible(True)
+        self.update_pbar.setValue(0)
+        
+        current_exe = Path(sys.executable).resolve()
+        self.updater_thread = SelfUpdateThread(self.latest_version_url, current_exe)
+        self.updater_thread.progress.connect(self.update_pbar.setValue)
+        self.updater_thread.finished.connect(self.on_self_update_finished)
+        self.updater_thread.start()
+
+    def on_self_update_finished(self, success, message):
+        if success:
+            QMessageBox.information(self, "Update Complete", "Update downloaded! Click OK to restart Wingosy.")
+            current_exe = Path(sys.executable).resolve()
+            subprocess.Popen([str(current_exe)])
+            QApplication.instance().quit()
+        else:
+            QMessageBox.critical(self, "Update Failed", f"Could not replace the current file. Please download manually.\nError: {message}")
+            self.upgrade_btn.setEnabled(True)
+            self.upgrade_btn.setText("Retry Update")
+            webbrowser.open(self.latest_version_url)
+
     def do_logout(self):
+        reply = QMessageBox.question(self, "Log Out", "Are you sure you want to log out? You will need to enter your credentials again.", QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+            
         self.config.set("token", None)
         self.config.set("password", None)
         QMessageBox.information(self, "Logged Out", "You have been logged out. Restart to log in.")
@@ -409,11 +486,17 @@ class GameCard(QWidget):
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setStyleSheet("color: white; font-weight: bold; border: none;")
         layout.addWidget(self.title_label)
-        url = client.get_cover_url(game)
+        self.fetcher = None
+
+    def start_image_fetch(self, main_window):
+        url = self.client.get_cover_url(self.game)
         if url:
-            self.fetcher = ImageFetcher(game['id'], url)
+            self.fetcher = ImageFetcher(self.game['id'], url)
             self.fetcher.finished.connect(self.set_image)
+            self.fetcher.finished.connect(lambda: main_window._on_image_fetched(self.fetcher))
             self.fetcher.start()
+            return self.fetcher
+        return None
 
     def set_image(self, game_id, pixmap):
         self.img_label.setPixmap(pixmap.scaled(150, 200, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
@@ -438,6 +521,8 @@ class GameDetailDialog(QDialog):
         if url:
             self.img_fetch_thread = ImageFetcher(game['id'], url)
             self.img_fetch_thread.finished.connect(lambda g, p: self.img_label.setPixmap(p.scaled(200, 280)))
+            self.img_fetch_thread.finished.connect(lambda t=self.img_fetch_thread: self.main_window.active_threads.remove(t) if t in self.main_window.active_threads else None)
+            self.main_window.active_threads.append(self.img_fetch_thread)
             self.img_fetch_thread.start()
         
         detail_layout = QVBoxLayout()
@@ -540,10 +625,14 @@ class GameDetailDialog(QDialog):
         self.dl_btn.setVisible(False)
         self.cancel_btn.setVisible(True)
         self.progress_bar.setVisible(True)
-        self.dl_thread = RomDownloader(self.client, self.game['id'], file_data['file_name'], target_path)
-        self.dl_thread.progress.connect(lambda p, s: (self.progress_bar.setValue(p), self.speed_label.setText(f"Speed: {format_speed(s)}")))
-        self.dl_thread.finished.connect(self.on_download_complete)
-        self.dl_thread.start()
+        
+        thread = RomDownloader(self.client, self.game['id'], file_data['file_name'], target_path)
+        self.main_window.active_threads.append(thread)
+        thread.progress.connect(lambda p, s: (self.progress_bar.setValue(p), self.speed_label.setText(f"Speed: {format_speed(s)}")))
+        thread.finished.connect(self.on_download_complete)
+        thread.finished.connect(lambda t=thread: self.main_window.active_threads.remove(t) if t in self.main_window.active_threads else None)
+        self.dl_thread = thread
+        thread.start()
 
     def cancel_dl(self):
         if self.dl_thread:
@@ -601,20 +690,34 @@ class LibraryTab(QWidget):
         self.populate_grid(filtered)
 
     def populate_grid(self, games):
+        # Reset queue
+        self.main_window.image_fetch_queue = []
+        
         for i in reversed(range(self.grid_layout.count())):
             item = self.grid_layout.itemAt(i)
             if item and item.widget():
                 item.widget().setParent(None)
         
         row, col = 0, 0
+        all_cards = []
         for game in games:
             card = GameCard(game, self.client)
             card.clicked.connect(lambda g=game: GameDetailDialog(g, self.client, self.config, self.main_window, self.main_window).exec())
             self.grid_layout.addWidget(card, row, col)
+            all_cards.append(card)
             col += 1
             if col >= 6:
                 col = 0
                 row += 1
+        
+        # Throttle image fetching
+        for i, card in enumerate(all_cards):
+            if i < 10:
+                fetcher = card.start_image_fetch(self.main_window)
+                if fetcher:
+                    self.main_window.active_image_fetchers.append(fetcher)
+            else:
+                self.main_window.image_fetch_queue.append(card)
 
 class EmulatorsTab(QWidget):
     def __init__(self, main_window):
@@ -721,6 +824,8 @@ class WingosyMainWindow(QMainWindow):
         self.config, self.client, self.watcher_class, self.version = config_manager, client, watcher_class, version
         self.watcher = None
         self.active_threads = []
+        self.image_fetch_queue = []
+        self.active_image_fetchers = []
         self.all_games = []
         self.setWindowTitle("Wingosy Launcher")
         self.resize(1100, 800)
@@ -768,6 +873,15 @@ class WingosyMainWindow(QMainWindow):
         main_layout.addWidget(self.tabs)
         
         self.fetch_library_and_populate()
+
+    def _on_image_fetched(self, fetcher):
+        if fetcher in self.active_image_fetchers:
+            self.active_image_fetchers.remove(fetcher)
+        if self.image_fetch_queue:
+            next_card = self.image_fetch_queue.pop(0)
+            new_fetcher = next_card.start_image_fetch(self)
+            if new_fetcher:
+                self.active_image_fetchers.append(new_fetcher)
 
     def fetch_library_and_populate(self):
         try:
@@ -883,7 +997,7 @@ class WingosyMainWindow(QMainWindow):
             fw_dl = BiosDownloader(self.client, fw, str(target_path))
             fw_dl.progress.connect(lambda p, s: self.log(f"DL BIOS: {p}% @ {format_speed(s)}"))
             fw_dl.finished.connect(lambda ok, p: self.log(f"✨ BIOS saved to {p}") if ok else self.log(f"❌ BIOS failed: {p}"))
-            fw_dl.finished.connect(lambda: self.active_threads.remove(fw_dl) if fw_dl in self.active_threads else None)
+            fw_dl.finished.connect(lambda t=fw_dl: self.active_threads.remove(t) if t in self.active_threads else None)
             self.active_threads.append(fw_dl)
             fw_dl.start()
             return True
@@ -904,6 +1018,7 @@ class WingosyMainWindow(QMainWindow):
             else: return
             dl_thread.progress.connect(lambda p, s: self.log(f"DL {name}: {p}% @ {format_speed(s)}"))
             dl_thread.finished.connect(lambda ok, p: self.post_dl_emu(name, ok, p, dl_thread))
+            dl_thread.finished.connect(lambda t=dl_thread: self.active_threads.remove(t) if t in self.active_threads else None)
             self.active_threads.append(dl_thread)
             dl_thread.start()
         except Exception as e:
@@ -930,7 +1045,6 @@ class WingosyMainWindow(QMainWindow):
                             self.log(f"📁 Portable mode enabled ({trigger})")
                     break
         else: self.log(f"❌ {path}")
-        if thread in self.active_threads: self.active_threads.remove(thread)
 
     def st_ep(self, name):
         path, _ = QFileDialog.getOpenFileName(self, f"Select {name}.exe", filter="Executables (*.exe)")
@@ -958,24 +1072,32 @@ class WingosyMainWindow(QMainWindow):
             emu_data = self.config.get("emulators")[name]
             path = emu_data.get("config_path")
             if not path: return
-            self.log(f"🔄 {mode}ing {name} config...")
-            if mode == "export" and os.path.exists(path):
-                from src.utils import zip_path
-                temp_zip = f"conf_{name}.zip"
-                zip_path(path, temp_zip)
-                if self.client.upload_save(17, f"{name}-config", temp_zip)[0]: self.log(f"✨ {name} config exported.")
-                if os.path.exists(temp_zip): os.remove(temp_zip)
+            
+            if mode == "export":
+                if not os.path.exists(path):
+                    QMessageBox.warning(self, "Export Failed", f"Config path does not exist: {path}")
+                    return
+                
+                target_zip, _ = QFileDialog.getSaveFileName(self, f"Export {name} Config", f"{name}_config.zip", "ZIP Files (*.zip)")
+                if target_zip:
+                    self.log(f"🔄 Exporting {name} config to {target_zip}...")
+                    from src.utils import zip_path
+                    zip_path(path, target_zip)
+                    self.log(f"✨ {name} config exported.")
+            
             elif mode == "import":
-                latest = self.client.get_latest_save(17)
-                if latest:
-                    temp_dl = "dl_conf.zip"
-                    if self.client.download_save(latest, temp_dl):
-                        if os.path.exists(path): shutil.move(path, f"{path}.bak")
-                        with zipfile.ZipFile(temp_dl, 'r') as z: z.extractall(Path(path).parent)
-                        self.log(f"✨ {name} config restored!")
-                        os.remove(temp_dl)
+                source_zip, _ = QFileDialog.getOpenFileName(self, f"Import {name} Config", "", "ZIP Files (*.zip)")
+                if source_zip:
+                    self.log(f"🔄 Importing {name} config from {source_zip}...")
+                    if os.path.exists(path):
+                        shutil.move(path, f"{path}.bak")
+                    
+                    with zipfile.ZipFile(source_zip, 'r') as z:
+                        z.extractall(Path(path).parent)
+                    self.log(f"✨ {name} config restored!")
+                    
         except Exception as e:
-            self.log(f"❌ Config sync error: {e}")
+            self.log(f"❌ Config operation error: {e}")
 
     def log(self, message):
         self.log_area.append(message)

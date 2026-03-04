@@ -15,6 +15,9 @@ class RomMClient:
     def login(self, username, password):
         try:
             url = f"{self.host}/api/token"
+            if self.host.startswith("http://"):
+                print("[API] Warning: Credentials being sent over unencrypted HTTP connection.")
+            
             scope = "me.read me.write platforms.read roms.read assets.read assets.write roms.user.read roms.user.write collections.read collections.write"
             data = {
                 "grant_type": "password",
@@ -72,10 +75,13 @@ class RomMClient:
             url = f"{self.host}/api/roms/{rom_id}/content/{encoded_name}"
             
             r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
-            if r.status_code != 200:
-                # Fallback to /download path
+            if r.status_code == 404:
+                # Fallback to /download path ONLY if 404
                 url = f"{self.host}/api/roms/{rom_id}/download"
                 r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
+
+            if r.status_code != 200:
+                return False
 
             total = int(r.headers.get('content-length', 0))
             downloaded = 0
