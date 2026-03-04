@@ -7,6 +7,7 @@ import subprocess
 import time
 import json
 import webbrowser
+import re
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QVBoxLayout, 
                              QWidget, QLabel, QLineEdit, QPushButton, QFormLayout, 
@@ -51,14 +52,23 @@ class SetupDialog(QDialog):
         layout.addRow("Username:", self.user_input)
         layout.addRow("Password:", self.pass_input)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def validate_and_accept(self):
+        host = self.host_input.text().strip()
+        # Basic URL validation
+        url_pattern = re.compile(r'^https?://.+')
+        if not url_pattern.match(host):
+            QMessageBox.warning(self, "Invalid Host", "Please enter a valid URL (starting with http:// or https://)")
+            return
+        self.accept()
+
     def get_data(self):
         return {
-            "host": self.host_input.text(),
-            "username": self.user_input.text(),
+            "host": self.host_input.text().strip().rstrip('/'),
+            "username": self.user_input.text().strip(),
             "password": self.pass_input.text()
         }
 
@@ -390,24 +400,26 @@ class GameCard(QWidget):
             QWidget { background: #1e1e1e; border-radius: 8px; }
             QWidget:hover { background: #2c2c2c; border: 2px solid #1565c0; }
         """)
-        l = QVBoxLayout(self)
-        self.img = QLabel()
-        self.img.setFixedSize(150, 200)
-        self.img.setAlignment(Qt.AlignCenter)
-        l.addWidget(self.img)
-        self.t = QLabel(game.get('name', 'Unknown'))
-        self.t.setAlignment(Qt.AlignCenter)
-        self.t.setStyleSheet("color: white; font-weight: bold; border: none;")
-        l.addWidget(self.t)
+        layout = QVBoxLayout(self)
+        self.img_label = QLabel()
+        self.img_label.setFixedSize(150, 200)
+        self.img_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.img_label)
+        self.title_label = QLabel(game.get('name', 'Unknown'))
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setStyleSheet("color: white; font-weight: bold; border: none;")
+        layout.addWidget(self.title_label)
         url = client.get_cover_url(game)
         if url:
             self.fetcher = ImageFetcher(game['id'], url)
-            self.fetcher.finished.connect(self.set_i)
+            self.fetcher.finished.connect(self.set_image)
             self.fetcher.start()
-    def set_i(self, gid, pix):
-        self.img.setPixmap(pix.scaled(150, 200, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
-    def mouseReleaseEvent(self, e): 
-        if e.button() == Qt.LeftButton:
+
+    def set_image(self, game_id, pixmap):
+        self.img_label.setPixmap(pixmap.scaled(150, 200, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+
+    def mouseReleaseEvent(self, event): 
+        if event.button() == Qt.LeftButton:
             self.clicked.emit(self.game)
 
 class GameDetailDialog(QDialog):
@@ -417,49 +429,50 @@ class GameDetailDialog(QDialog):
         self.setWindowTitle(game.get("name"))
         self.resize(500, 450)
         self.dl_thread = None
-        l = QVBoxLayout(self)
-        il = QHBoxLayout()
-        self.img = QLabel()
-        self.img.setFixedSize(200, 280)
-        il.addWidget(self.img)
+        layout = QVBoxLayout(self)
+        info_layout = QHBoxLayout()
+        self.img_label = QLabel()
+        self.img_label.setFixedSize(200, 280)
+        info_layout.addWidget(self.img_label)
         url = client.get_cover_url(game)
         if url:
             self.img_fetch_thread = ImageFetcher(game['id'], url)
-            self.img_fetch_thread.finished.connect(lambda g, p: self.img.setPixmap(p.scaled(200, 280)))
+            self.img_fetch_thread.finished.connect(lambda g, p: self.img_label.setPixmap(p.scaled(200, 280)))
             self.img_fetch_thread.start()
-        dt = QVBoxLayout()
-        dt.addWidget(QLabel(f"<h2>{game.get('name')}</h2>"))
-        dt.addWidget(QLabel(f"<b>Platform:</b> {game.get('platform_display_name')}"))
+        
+        detail_layout = QVBoxLayout()
+        detail_layout.addWidget(QLabel(f"<h2>{game.get('name')}</h2>"))
+        detail_layout.addWidget(QLabel(f"<b>Platform:</b> {game.get('platform_display_name')}"))
         
         self.play_btn = QPushButton("▶ PLAY")
         self.play_btn.setStyleSheet("background: #1e88e5; color: white; font-weight: bold; padding: 10px; font-size: 14pt;")
         self.play_btn.clicked.connect(self.play_game)
-        dt.addWidget(self.play_btn)
+        detail_layout.addWidget(self.play_btn)
 
         files = game.get('files', [])
         self.dl_btn = QPushButton("Download ROM")
         self.dl_btn.setStyleSheet("background: #1565c0; color: white; padding: 8px;")
         self.dl_btn.setVisible(len(files) > 0)
         self.dl_btn.clicked.connect(lambda: self.download_rom(files[0]))
-        dt.addWidget(self.dl_btn)
+        detail_layout.addWidget(self.dl_btn)
         
         self.cancel_btn = QPushButton("Cancel Download")
         self.cancel_btn.setStyleSheet("background: #c62828; color: white;")
         self.cancel_btn.setVisible(False)
         self.cancel_btn.clicked.connect(self.cancel_dl)
-        dt.addWidget(self.cancel_btn)
+        detail_layout.addWidget(self.cancel_btn)
 
-        self.p = QProgressBar()
-        self.p.setVisible(False)
-        dt.addWidget(self.p)
-        self.sl = QLabel()
-        dt.addWidget(self.sl)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        detail_layout.addWidget(self.progress_bar)
+        self.speed_label = QLabel()
+        detail_layout.addWidget(self.speed_label)
         
-        il.addLayout(dt)
-        l.addLayout(il)
-        bb = QDialogButtonBox(QDialogButtonBox.Close, self)
-        bb.rejected.connect(self.reject)
-        l.addWidget(bb)
+        info_layout.addLayout(detail_layout)
+        layout.addLayout(info_layout)
+        button_box = QDialogButtonBox(QDialogButtonBox.Close, self)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
 
     def play_game(self):
         platform = self.game.get('platform_slug')
@@ -502,8 +515,7 @@ class GameDetailDialog(QDialog):
             return
 
         self.main_window.log(f"🎮 Preparing {self.game.get('name')}...")
-        if not self.main_window.watcher:
-            self.main_window.toggle_tr()
+        self.main_window.ensure_watcher_running()
         
         try:
             args = [emu_data['path'], str(local_rom)]
@@ -519,17 +531,17 @@ class GameDetailDialog(QDialog):
             self.main_window.log(f"❌ Launch Error: {e}")
             QMessageBox.critical(self, "Launch Error", str(e))
 
-    def download_rom(self, fd):
+    def download_rom(self, file_data):
         suggested = Path(self.config.get("base_rom_path")) / self.game.get('platform_slug', 'unknown')
         os.makedirs(suggested, exist_ok=True)
-        tp, _ = QFileDialog.getSaveFileName(self, "Save ROM", str(suggested / fd['file_name']))
-        if not tp:
+        target_path, _ = QFileDialog.getSaveFileName(self, "Save ROM", str(suggested / file_data['file_name']))
+        if not target_path:
             return
         self.dl_btn.setVisible(False)
         self.cancel_btn.setVisible(True)
-        self.p.setVisible(True)
-        self.dl_thread = RomDownloader(self.client, self.game['id'], fd['file_name'], tp)
-        self.dl_thread.progress.connect(lambda p, s: (self.p.setValue(p), self.sl.setText(f"Speed: {format_speed(s)}")))
+        self.progress_bar.setVisible(True)
+        self.dl_thread = RomDownloader(self.client, self.game['id'], file_data['file_name'], target_path)
+        self.dl_thread.progress.connect(lambda p, s: (self.progress_bar.setValue(p), self.speed_label.setText(f"Speed: {format_speed(s)}")))
         self.dl_thread.finished.connect(self.on_download_complete)
         self.dl_thread.start()
 
@@ -538,15 +550,170 @@ class GameDetailDialog(QDialog):
             self.dl_thread.requestInterruption()
             self.on_download_complete(False, "Cancelled")
 
-    def on_download_complete(self, ok, p):
+    def on_download_complete(self, ok, path):
         self.dl_btn.setVisible(True)
         self.cancel_btn.setVisible(False)
-        self.p.setVisible(False)
-        self.sl.setText("")
+        self.progress_bar.setVisible(False)
+        self.speed_label.setText("")
         if ok:
-            QMessageBox.information(self, "Success", f"Downloaded to {p}")
-        elif p != "Cancelled":
-            QMessageBox.critical(self, "Error", f"Download failed: {p}")
+            QMessageBox.information(self, "Success", f"Downloaded to {path}")
+        elif path != "Cancelled":
+            QMessageBox.critical(self, "Error", f"Download failed: {path}")
+
+class LibraryTab(QWidget):
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.client = main_window.client
+        self.config = main_window.config
+        
+        layout = QVBoxLayout(self)
+        
+        # Filter controls
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Search:"))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Filter games...")
+        self.search_input.textChanged.connect(self.apply_filters)
+        filter_layout.addWidget(self.search_input)
+        
+        filter_layout.addWidget(QLabel("Platform:"))
+        self.platform_filter = QComboBox()
+        self.platform_filter.addItem("All Platforms")
+        self.platform_filter.currentTextChanged.connect(self.apply_filters)
+        filter_layout.addWidget(self.platform_filter)
+        layout.addLayout(filter_layout)
+
+        # Grid area
+        self.grid_widget = QWidget()
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(self.grid_widget)
+        layout.addWidget(scroll_area)
+
+    def apply_filters(self):
+        text = self.search_input.text().lower()
+        platform = self.platform_filter.currentText()
+        filtered = [g for g in self.main_window.all_games if (text in g.get('name', '').lower() or text in g.get('fs_name', '').lower()) and (platform == "All Platforms" or g.get('platform_display_name') == platform)]
+        self.populate_grid(filtered)
+
+    def populate_grid(self, games):
+        for i in reversed(range(self.grid_layout.count())):
+            item = self.grid_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setParent(None)
+        
+        row, col = 0, 0
+        for game in games:
+            card = GameCard(game, self.client)
+            card.clicked.connect(lambda g=game: GameDetailDialog(g, self.client, self.config, self.main_window, self.main_window).exec())
+            self.grid_layout.addWidget(card, row, col)
+            col += 1
+            if col >= 6:
+                col = 0
+                row += 1
+
+class EmulatorsTab(QWidget):
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.config = main_window.config
+        
+        layout = QVBoxLayout(self)
+        
+        # Paths setup
+        paths_widget = QWidget()
+        form_layout = QFormLayout(paths_widget)
+        
+        rom_path_layout = QHBoxLayout()
+        self.rom_path_input = QLineEdit(self.config.get("base_rom_path"))
+        rom_path_layout.addWidget(self.rom_path_input)
+        browse_rom_btn = QPushButton("Browse")
+        browse_rom_btn.clicked.connect(lambda: self.browse_directory("base_rom_path", self.rom_path_input))
+        rom_path_layout.addWidget(browse_rom_btn)
+        form_layout.addRow("ROM Path:", rom_path_layout)
+        
+        emu_path_layout = QHBoxLayout()
+        self.emu_path_input = QLineEdit(self.config.get("base_emu_path"))
+        emu_path_layout.addWidget(self.emu_path_input)
+        browse_emu_btn = QPushButton("Browse")
+        browse_emu_btn.clicked.connect(lambda: self.browse_directory("base_emu_path", self.emu_path_input))
+        emu_path_layout.addWidget(browse_emu_btn)
+        form_layout.addRow("Emu Path:", emu_path_layout)
+        
+        save_paths_btn = QPushButton("Save Paths")
+        save_paths_btn.clicked.connect(self.save_paths)
+        form_layout.addRow(save_paths_btn)
+        layout.addWidget(paths_widget)
+        
+        # Emulator list
+        self.emu_list_layout = QVBoxLayout()
+        self.emu_list_layout.setAlignment(Qt.AlignTop)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        emulator_container = QWidget()
+        emulator_container.setLayout(self.emu_list_layout)
+        scroll_area.setWidget(emulator_container)
+        layout.addWidget(scroll_area)
+        
+        self.populate_emus()
+
+    def browse_directory(self, key, line_edit):
+        directory = QFileDialog.getExistingDirectory(self, "Select Folder")
+        if directory:
+            line_edit.setText(directory)
+            self.config.set(key, directory)
+
+    def save_paths(self):
+        self.config.set("base_rom_path", self.rom_path_input.text())
+        self.config.set("base_emu_path", self.emu_path_input.text())
+        self.main_window.log("✅ Paths saved.")
+
+    def populate_emus(self):
+        for i in reversed(range(self.emu_list_layout.count())):
+            item = self.emu_list_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setParent(None)
+        
+        emus = self.config.get("emulators", {})
+        for name, data in emus.items():
+            row = QWidget()
+            row.setStyleSheet("background: #252525; border-radius: 5px; margin: 2px;")
+            row_layout = QHBoxLayout(row)
+            
+            name_label = QLabel(f"<b>{name}</b>")
+            name_label.setFixedWidth(180)
+            row_layout.addWidget(name_label)
+            
+            path_label = QLabel(data.get("path") or "Not Set")
+            path_label.setStyleSheet("color: #888;")
+            row_layout.addWidget(path_label, 1)
+            
+            btn_latest = QPushButton("⬇️ Latest")
+            btn_latest.clicked.connect(lambda checked, n=name: self.main_window.dl_emu(n))
+            row_layout.addWidget(btn_latest)
+            
+            btn_fw = QPushButton("📂 Firmware")
+            btn_fw.clicked.connect(lambda checked, n=name: self.main_window.open_fw(n))
+            row_layout.addWidget(btn_fw)
+            
+            btn_path = QPushButton("Path")
+            btn_path.clicked.connect(lambda checked, n=name: self.main_window.st_ep(n))
+            row_layout.addWidget(btn_path)
+            
+            btn_export = QPushButton("📤 Export")
+            btn_export.clicked.connect(lambda checked, n=name: self.main_window.sy_ec(n, "export"))
+            row_layout.addWidget(btn_export)
+            
+            btn_import = QPushButton("📥 Import")
+            btn_import.clicked.connect(lambda checked, n=name: self.main_window.sy_ec(n, "import"))
+            row_layout.addWidget(btn_import)
+            
+            self.emu_list_layout.addWidget(row)
 
 class WingosyMainWindow(QMainWindow):
     def __init__(self, config_manager, client, watcher_class, version):
@@ -567,32 +734,20 @@ class WingosyMainWindow(QMainWindow):
         self.ensure_watcher_running()
 
     def setup_ui(self):
-        c = QWidget()
-        self.setCentralWidget(c)
-        l = QVBoxLayout(c)
-        h = QHBoxLayout()
-        h.addWidget(QLabel("<h1 style='color: #1e88e5;'>Wingosy Launcher</h1>"))
-        h.addStretch()
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("<h1 style='color: #1e88e5;'>Wingosy Launcher</h1>"))
+        header_layout.addStretch()
+        
         # The watcher now starts automatically and handles process-specific tracking.
         # No manual "Start Tracking" button needed.
-        self.st_btn = QPushButton("⚙️ Settings")
-        self.st_btn.clicked.connect(self.open_st)
-        h.addWidget(self.st_btn)
-        l.addLayout(h)
-        
-        filter_l = QHBoxLayout()
-        filter_l.addWidget(QLabel("Search:"))
-        self.search_in = QLineEdit()
-        self.search_in.setPlaceholderText("Filter games...")
-        self.search_in.textChanged.connect(self.apply_filters)
-        filter_l.addWidget(self.search_in)
-        
-        filter_l.addWidget(QLabel("Platform:"))
-        self.plat_filter = QComboBox()
-        self.plat_filter.addItem("All Platforms")
-        self.plat_filter.currentTextChanged.connect(self.apply_filters)
-        filter_l.addWidget(self.plat_filter)
-        l.addLayout(filter_l)
+        self.settings_btn = QPushButton("⚙️ Settings")
+        self.settings_btn.clicked.connect(self.open_settings)
+        header_layout.addWidget(self.settings_btn)
+        main_layout.addLayout(header_layout)
 
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
@@ -600,215 +755,122 @@ class WingosyMainWindow(QMainWindow):
             QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #1e88e5; }
         """)
         
-        self.gw = QWidget()
-        self.gl = QGridLayout(self.gw)
-        self.gl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        sc = QScrollArea()
-        sc.setWidgetResizable(True)
-        sc.setWidget(self.gw)
-        self.tabs.addTab(sc, "🎮 Library")
+        self.library_tab = LibraryTab(self)
+        self.tabs.addTab(self.library_tab, "🎮 Library")
         
-        self.et = QWidget()
-        el = QVBoxLayout(self.et)
-        pb = QWidget()
-        f = QFormLayout(pb)
-        rl = QHBoxLayout()
-        self.rp = QLineEdit(self.config.get("base_rom_path"))
-        rl.addWidget(self.rp)
-        br = QPushButton("Browse")
-        br.clicked.connect(lambda: self.br_d("base_rom_path", self.rp))
-        rl.addWidget(br)
-        f.addRow("ROM Path:", rl)
-        xl = QHBoxLayout()
-        self.ep = QLineEdit(self.config.get("base_emu_path"))
-        xl.addWidget(self.ep)
-        be = QPushButton("Browse")
-        be.clicked.connect(lambda: self.br_d("base_emu_path", self.ep))
-        xl.addWidget(be)
-        f.addRow("Emu Path:", xl)
-        sp = QPushButton("Save Paths")
-        sp.clicked.connect(self.sv_p)
-        f.addRow(sp)
-        el.addWidget(pb)
-        self.emu_list_layout = QVBoxLayout()
-        self.emu_list_layout.setAlignment(Qt.AlignTop)
-        es = QScrollArea()
-        es.setWidgetResizable(True)
-        ec = QWidget()
-        ec.setLayout(self.emu_list_layout)
-        es.setWidget(ec)
-        el.addWidget(es)
-        self.tabs.addTab(self.et, "🛠️ Emulators")
-        self.la = QTextEdit()
-        self.la.setReadOnly(True)
-        self.la.setStyleSheet("background: #121212; color: #bbdefb; font-family: Consolas;")
-        self.tabs.addTab(self.la, "📝 Logs")
-        l.addWidget(self.tabs)
-        self.pop_lib()
-        self.pop_emu()
+        self.emulators_tab = EmulatorsTab(self)
+        self.tabs.addTab(self.emulators_tab, "🛠️ Emulators")
+        
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setStyleSheet("background: #121212; color: #bbdefb; font-family: Consolas;")
+        self.tabs.addTab(self.log_area, "📝 Logs")
+        main_layout.addWidget(self.tabs)
+        
+        self.fetch_library_and_populate()
 
-    def apply_filters(self):
-        txt = self.search_in.text().lower()
-        plat = self.plat_filter.currentText()
-        filtered = [g for g in self.all_games if (txt in g.get('name', '').lower() or txt in g.get('fs_name', '').lower()) and (plat == "All Platforms" or g.get('platform_display_name') == plat)]
-        self.populate_grid(filtered)
-
-    def br_d(self, k, le):
-        d = QFileDialog.getExistingDirectory(self, "Select Folder")
-        if d:
-            le.setText(d)
-            self.config.set(k, d)
-
-    def sv_p(self):
-        self.config.set("base_rom_path", self.rp.text())
-        self.config.set("base_emu_path", self.ep.text())
-        self.log("✅ Paths saved.")
-    
-    def pop_lib(self):
+    def fetch_library_and_populate(self):
         try:
             self.all_games = self.client.fetch_library()
-            plats = sorted(list(set(g.get('platform_display_name') for g in self.all_games if g.get('platform_display_name'))))
-            self.plat_filter.blockSignals(True)
-            self.plat_filter.clear()
-            self.plat_filter.addItem("All Platforms")
-            self.plat_filter.addItems(plats)
-            self.plat_filter.blockSignals(False)
-            self.populate_grid(self.all_games)
+            platforms = sorted(list(set(g.get('platform_display_name') for g in self.all_games if g.get('platform_display_name'))))
+            
+            self.library_tab.platform_filter.blockSignals(True)
+            self.library_tab.platform_filter.clear()
+            self.library_tab.platform_filter.addItem("All Platforms")
+            self.library_tab.platform_filter.addItems(platforms)
+            self.library_tab.platform_filter.blockSignals(False)
+            
+            self.library_tab.populate_grid(self.all_games)
         except Exception as e:
             self.log(f"❌ Error fetching library: {e}")
-
-    def populate_grid(self, games):
-        for i in reversed(range(self.gl.count())):
-            item = self.gl.itemAt(i)
-            if item and item.widget():
-                item.widget().setParent(None)
-        r, c = 0, 0
-        for g in games:
-            cd = GameCard(g, self.client)
-            cd.clicked.connect(lambda game=g: GameDetailDialog(game, self.client, self.config, self, self).exec())
-            self.gl.addWidget(cd, r, c)
-            c += 1
-            if c >= 6:
-                c = 0
-                r = r + 1
-
-    def pop_emu(self):
-        for i in reversed(range(self.emu_list_layout.count())):
-            item = self.emu_list_layout.itemAt(i)
-            if item and item.widget():
-                item.widget().setParent(None)
-        emus = self.config.get("emulators", {})
-        for n, d in emus.items():
-            row = QWidget()
-            row.setStyleSheet("background: #252525; border-radius: 5px; margin: 2px;")
-            rl = QHBoxLayout(row)
-            name_label = QLabel(f"<b>{n}</b>")
-            name_label.setFixedWidth(180)
-            rl.addWidget(name_label)
-            p_lbl = QLabel(d.get("path") or "Not Set")
-            p_lbl.setStyleSheet("color: #888;")
-            rl.addWidget(p_lbl, 1)
-            
-            btn_dl = QPushButton("⬇️ Latest")
-            btn_dl.clicked.connect(lambda checked, name=n: self.dl_emu(name))
-            rl.addWidget(btn_dl)
-            
-            btn_fw = QPushButton("📂 Firmware")
-            btn_fw.clicked.connect(lambda checked, name=n: self.open_fw(name))
-            rl.addWidget(btn_fw)
-            
-            btn_p = QPushButton("Path")
-            btn_p.clicked.connect(lambda checked, name=n: self.st_ep(name))
-            rl.addWidget(btn_p)
-            
-            btn_ex = QPushButton("📤 Export")
-            btn_ex.clicked.connect(lambda checked, name=n: self.sy_ec(name, "export"))
-            rl.addWidget(btn_ex)
-            
-            btn_im = QPushButton("📥 Import")
-            btn_im.clicked.connect(lambda checked, name=n: self.sy_ec(name, "import"))
-            rl.addWidget(btn_im)
-            self.emu_list_layout.addWidget(row)
 
     def open_fw(self, emu_name):
         emu_data = self.config.get("emulators").get(emu_name)
         slug = emu_data.get("platform_slug")
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"{emu_name} BIOS / Firmware")
-        dlg.resize(600, 500)
-        main_l = QVBoxLayout(dlg)
-        search_l = QHBoxLayout()
-        search_l.addWidget(QLabel("Search Library:"))
-        self.fw_search_in = QLineEdit(slug if slug != "multi" else "bios")
-        search_l.addWidget(self.fw_search_in)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{emu_name} BIOS / Firmware")
+        dialog.resize(600, 500)
+        layout = QVBoxLayout(dialog)
+        
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search Library:"))
+        self.fw_search_input = QLineEdit(slug if slug != "multi" else "bios")
+        search_layout.addWidget(self.fw_search_input)
         search_btn = QPushButton("Search")
-        search_l.addWidget(search_btn)
-        main_l.addLayout(search_l)
-        self.fw_scroll = QScrollArea()
-        self.fw_scroll.setWidgetResizable(True)
-        self.fw_list_container = QWidget()
-        self.fw_list_layout = QVBoxLayout(self.fw_list_container)
-        self.fw_list_layout.setAlignment(Qt.AlignTop)
-        self.fw_scroll.setWidget(self.fw_list_container)
-        main_l.addWidget(self.fw_scroll)
+        search_layout.addWidget(search_btn)
+        layout.addLayout(search_layout)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        container = QWidget()
+        list_layout = QVBoxLayout(container)
+        list_layout.setAlignment(Qt.AlignTop)
+        scroll_area.setWidget(container)
+        layout.addWidget(scroll_area)
 
         def perform_search():
-            for i in reversed(range(self.fw_list_layout.count())):
-                item = self.fw_list_layout.itemAt(i)
+            for i in reversed(range(list_layout.count())):
+                item = list_layout.itemAt(i)
                 if item and item.widget():
                     item.widget().setParent(None)
-            term = self.fw_search_in.text().lower()
-            fws = self.client.get_firmware()
-            matches = [f for f in fws if term in f.get('file_name', '').lower() or term in f.get('platform_name', '').lower() or term in f.get('platform_slug', '')]
-            for g in self.client.user_games:
-                if term in g.get('name', '').lower() or term in g.get('fs_name', '').lower():
-                    files = g.get('files', [])
+            
+            term = self.fw_search_input.text().lower()
+            firmwares = self.client.get_firmware()
+            matches = [f for f in firmwares if term in f.get('file_name', '').lower() or term in f.get('platform_name', '').lower() or term in f.get('platform_slug', '')]
+            
+            for game in self.client.user_games:
+                if term in game.get('name', '').lower() or term in game.get('fs_name', '').lower():
+                    files = game.get('files', [])
                     if files:
-                        matches.append({'id': g['id'], 'file_name': files[0].get('file_name'), 'platform_name': g.get('platform_display_name', 'Library'), 'is_rom': True})
+                        matches.append({'id': game['id'], 'file_name': files[0].get('file_name'), 'platform_name': game.get('platform_display_name', 'Library'), 'is_rom': True})
+            
             if not matches:
-                self.fw_list_layout.addWidget(QLabel("No results found."))
+                list_layout.addWidget(QLabel("No results found."))
                 return
-            platforms = {}
-            for f in matches:
-                p = f.get('platform_name', 'Other')
-                if p not in platforms: platforms[p] = []
-                platforms[p].append(f)
-            for p_name, files in platforms.items():
+                
+            platforms_map = {}
+            for fw in matches:
+                p = fw.get('platform_name', 'Other')
+                if p not in platforms_map: platforms_map[p] = []
+                platforms_map[p].append(fw)
+                
+            for plat_name, files in platforms_map.items():
                 if len(files) > 1:
                     group = QWidget()
                     gl = QVBoxLayout(group)
                     group.setStyleSheet("background: #333; border-radius: 5px; margin: 5px;")
-                    gl.addWidget(QLabel(f"<b>{p_name} ({len(files)} files)</b>"))
-                    db = QPushButton("Download Full Set")
-                    db.clicked.connect(lambda checked, f_list=files: self.dl_fw_list(emu_name, f_list, dlg))
-                    gl.addWidget(db)
-                    self.fw_list_layout.addWidget(group)
+                    gl.addWidget(QLabel(f"<b>{plat_name} ({len(files)} files)</b>"))
+                    dl_set_btn = QPushButton("Download Full Set")
+                    dl_set_btn.clicked.connect(lambda checked, f_list=files: self.dl_fw_list(emu_name, f_list, dialog))
+                    gl.addWidget(dl_set_btn)
+                    list_layout.addWidget(group)
                 else:
-                    f = files[0]
-                    fr = QWidget()
-                    fr_l = QHBoxLayout(fr)
-                    fr_l.addWidget(QLabel(f"{f['file_name']} ({f['platform_name']})"))
-                    db = QPushButton("Download")
-                    db.clicked.connect(lambda checked, fw=f: self.dl_fw(emu_name, fw, dlg))
-                    fr_l.addWidget(db)
-                    self.fw_list_layout.addWidget(fr)
+                    fw = files[0]
+                    row = QWidget()
+                    row_layout = QHBoxLayout(row)
+                    row_layout.addWidget(QLabel(f"{fw['file_name']} ({fw['platform_name']})"))
+                    dl_btn = QPushButton("Download")
+                    dl_btn.clicked.connect(lambda checked, f=fw: self.dl_fw(emu_name, f, dialog))
+                    row_layout.addWidget(dl_btn)
+                    list_layout.addWidget(row)
 
         search_btn.clicked.connect(perform_search)
         perform_search()
-        bb = QDialogButtonBox(QDialogButtonBox.Close, dlg)
-        bb.rejected.connect(dlg.reject)
-        main_l.addWidget(bb)
-        dlg.exec()
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Close, dialog)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        dialog.exec()
 
-    def dl_fw_list(self, emu, fw_list, dlg):
+    def dl_fw_list(self, emu, fw_list, dialog):
         count = 0
         for fw in fw_list:
             if self.start_fw_download(emu, fw): count += 1
         self.log(f"✨ BIOS Sync: {count} downloads started.")
-        dlg.accept()
+        dialog.accept()
 
-    def dl_fw(self, emu, fw, dlg):
-        if self.start_fw_download(emu, fw): dlg.accept()
+    def dl_fw(self, emu, fw, dialog):
+        if self.start_fw_download(emu, fw): dialog.accept()
 
     def start_fw_download(self, emu, fw):
         try:
@@ -816,9 +878,9 @@ class WingosyMainWindow(QMainWindow):
             emu_folder = self.config.get("emulators")[emu].get("folder", emu)
             suggested = Path(emu_path).parent / "bios" if emu_path else Path(self.config.get("base_emu_path")) / emu_folder / "bios"
             os.makedirs(suggested, exist_ok=True)
-            tp = suggested / fw['file_name']
+            target_path = suggested / fw['file_name']
             self.log(f"🚀 BIOS: {fw['file_name']}...")
-            fw_dl = BiosDownloader(self.client, fw, str(tp))
+            fw_dl = BiosDownloader(self.client, fw, str(target_path))
             fw_dl.progress.connect(lambda p, s: self.log(f"DL BIOS: {p}% @ {format_speed(s)}"))
             fw_dl.finished.connect(lambda ok, p: self.log(f"✨ BIOS saved to {p}") if ok else self.log(f"❌ BIOS failed: {p}"))
             fw_dl.finished.connect(lambda: self.active_threads.remove(fw_dl) if fw_dl in self.active_threads else None)
@@ -829,35 +891,35 @@ class WingosyMainWindow(QMainWindow):
             self.log(f"❌ Error starting BIOS download: {e}")
             return False
 
-    def dl_emu(self, n):
+    def dl_emu(self, name):
         try:
-            emu_data = self.config.get("emulators")[n]
+            emu_data = self.config.get("emulators")[name]
             url, repo = emu_data.get("url"), emu_data.get("github")
             target_dir = Path(self.config.get("base_emu_path")) / emu_data.get("folder")
             os.makedirs(target_dir, exist_ok=True)
-            self.log(f"🚀 Downloading {n}...")
+            self.log(f"🚀 Downloading {name}...")
             if emu_data.get("dolphin_latest", False): dl_thread = DolphinDownloader(str(target_dir))
             elif url: dl_thread = DirectDownloader(url, str(target_dir))
             elif repo: dl_thread = GithubDownloader(repo, str(target_dir))
             else: return
-            dl_thread.progress.connect(lambda p, s: self.log(f"DL {n}: {p}% @ {format_speed(s)}"))
-            dl_thread.finished.connect(lambda ok, p: self.post_dl_emu(n, ok, p, dl_thread))
+            dl_thread.progress.connect(lambda p, s: self.log(f"DL {name}: {p}% @ {format_speed(s)}"))
+            dl_thread.finished.connect(lambda ok, p: self.post_dl_emu(name, ok, p, dl_thread))
             self.active_threads.append(dl_thread)
             dl_thread.start()
         except Exception as e:
             self.log(f"❌ Error starting emulator download: {e}")
 
-    def post_dl_emu(self, n, ok, p, thread):
+    def post_dl_emu(self, name, ok, path, thread):
         if ok:
-            self.log(f"✨ {n} ready at {p}")
-            emu_data = self.config.get("emulators")[n]
+            self.log(f"✨ {name} ready at {path}")
+            emu_data = self.config.get("emulators")[name]
             exe_name = emu_data['exe']
-            for root, dirs, files in os.walk(p):
+            for root, dirs, files in os.walk(path):
                 if exe_name in files:
                     full_path = os.path.join(root, exe_name)
                     emu_data['path'] = full_path
                     self.config.set("emulators", self.config.get("emulators"))
-                    self.pop_emu()
+                    self.emulators_tab.populate_emus()
                     self.log(f"📍 Path: {full_path}")
                     trigger = emu_data.get("portable_trigger")
                     if trigger:
@@ -867,58 +929,58 @@ class WingosyMainWindow(QMainWindow):
                             else: trigger_path.mkdir(exist_ok=True)
                             self.log(f"📁 Portable mode enabled ({trigger})")
                     break
-        else: self.log(f"❌ {p}")
+        else: self.log(f"❌ {path}")
         if thread in self.active_threads: self.active_threads.remove(thread)
 
-    def st_ep(self, n):
-        p, _ = QFileDialog.getOpenFileName(self, f"Select {n}.exe", filter="Executables (*.exe)")
-        if p:
-            ems = self.config.get("emulators")
-            ems[n]["path"] = p
-            self.config.set("emulators", ems)
-            self.pop_emu()
+    def st_ep(self, name):
+        path, _ = QFileDialog.getOpenFileName(self, f"Select {name}.exe", filter="Executables (*.exe)")
+        if path:
+            emus = self.config.get("emulators")
+            emus[name]["path"] = path
+            self.config.set("emulators", emus)
+            self.emulators_tab.populate_emus()
 
     @Slot(str, str)
-    def on_path(self, n, p):
+    def on_path(self, name, path):
         emus = self.config.get("emulators")
         updated = False
         for disp_name, data in emus.items():
-            if data['exe'].lower() == n.lower() or n.lower() in disp_name.lower():
-                data['path'] = p
+            if data['exe'].lower() == name.lower() or name.lower() in disp_name.lower():
+                data['path'] = path
                 updated = True
                 break
         if updated:
             self.config.set("emulators", emus)
-            self.pop_emu()
+            self.emulators_tab.populate_emus()
 
-    def sy_ec(self, n, m):
+    def sy_ec(self, name, mode):
         try:
-            d = self.config.get("emulators")[n]
-            p = d.get("config_path")
-            if not p: return
-            self.log(f"🔄 {m}ing {n} config...")
-            if m == "export" and os.path.exists(p):
+            emu_data = self.config.get("emulators")[name]
+            path = emu_data.get("config_path")
+            if not path: return
+            self.log(f"🔄 {mode}ing {name} config...")
+            if mode == "export" and os.path.exists(path):
                 from src.utils import zip_path
-                t = f"conf_{n}.zip"
-                zip_path(p, t)
-                if self.client.upload_save(17, f"{n}-config", t)[0]: self.log(f"✨ {n} config exported.")
-                if os.path.exists(t): os.remove(t)
-            elif m == "import":
-                l = self.client.get_latest_save(17)
-                if l:
-                    t = "dl_conf.zip"
-                    if self.client.download_save(l, t):
-                        if os.path.exists(p): shutil.move(p, f"{p}.bak")
-                        with zipfile.ZipFile(t, 'r') as z: z.extractall(Path(p).parent)
-                        self.log(f"✨ {n} config restored!")
-                        os.remove(t)
+                temp_zip = f"conf_{name}.zip"
+                zip_path(path, temp_zip)
+                if self.client.upload_save(17, f"{name}-config", temp_zip)[0]: self.log(f"✨ {name} config exported.")
+                if os.path.exists(temp_zip): os.remove(temp_zip)
+            elif mode == "import":
+                latest = self.client.get_latest_save(17)
+                if latest:
+                    temp_dl = "dl_conf.zip"
+                    if self.client.download_save(latest, temp_dl):
+                        if os.path.exists(path): shutil.move(path, f"{path}.bak")
+                        with zipfile.ZipFile(temp_dl, 'r') as z: z.extractall(Path(path).parent)
+                        self.log(f"✨ {name} config restored!")
+                        os.remove(temp_dl)
         except Exception as e:
             self.log(f"❌ Config sync error: {e}")
 
-    def log(self, m):
-        self.la.append(m)
+    def log(self, message):
+        self.log_area.append(message)
 
-    def open_st(self):
+    def open_settings(self):
         SettingsDialog(self.config, self, self).exec()
 
     def ensure_watcher_running(self):
@@ -931,17 +993,17 @@ class WingosyMainWindow(QMainWindow):
     def setup_tray(self):
         icon_path = get_resource_path("icon.png")
         icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon(QPixmap(32, 32))
-        self.ti = QSystemTrayIcon(icon, self)
+        self.tray_icon = QSystemTrayIcon(icon, self)
         menu = QMenu()
         menu.addAction("Show", self.showNormal)
         menu.addAction("Exit", QApplication.instance().quit)
-        self.ti.setContextMenu(menu)
-        self.ti.show()
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.show()
 
-    def closeEvent(self, e):
-        if self.ti.isVisible():
+    def closeEvent(self, event):
+        if self.tray_icon.isVisible():
             self.hide()
-            e.ignore()
+            event.ignore()
 
 if __name__ == "__main__":
     pass
