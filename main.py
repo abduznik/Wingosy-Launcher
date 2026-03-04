@@ -5,7 +5,7 @@ from src.api import RomMClient
 from src.watcher import WingosyWatcher
 from src.ui import WingosyMainWindow, SetupDialog
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 def main():
     app = QApplication(sys.argv)

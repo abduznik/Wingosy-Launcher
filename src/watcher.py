@@ -226,30 +226,119 @@ class WingosyWatcher(QThread):
             
             # 1. NINTENDO SWITCH
             if "Switch" in emu_display_name or platform == "switch":
+                import sqlite3
                 title_id = None
-                t_lower = title.lower()
-                if "monster hunter rise" in t_lower: title_id = "0100B04011422000"
-                elif "monster hunter generations" in t_lower or "mhgu" in t_lower: title_id = "0100770008DD8000"
-                elif "tears of the kingdom" in t_lower or "totk" in t_lower: title_id = "0100F2C0115B6000"
-                elif "breath of the wild" in t_lower or "botw" in t_lower: title_id = "01007EF00011E000"
+                rom_path = None
                 
+                # Extract ROM path from command line
+                m_path = re.search(r'("[^"]+\.(?:xci|nsp|nsz)")', full_cmd)
+                if not m_path: m_path = re.search(r'(\S+\.(?:xci|nsp|nsz))', full_cmd)
+                if m_path:
+                    rom_path = Path(m_path.group(1).strip('"'))
+
+                search_roots = [
+                    emu_dir / "user", 
+                    emu_dir / "data", 
+                    Path(os.path.expandvars(r'%APPDATA%\eden')), 
+                    Path(os.path.expandvars(r'%APPDATA%\yuzu')), 
+                    Path(os.path.expandvars(r'%APPDATA%\sudachi')),
+                    Path(os.path.expandvars(r'%APPDATA%\torzu')),
+                    Path(os.path.expandvars(r'%LOCALAPPDATA%\yuzu'))
+                ]
+
+                # Prioritize roots matching current emulator name
+                emu_lower = emu_display_name.lower()
+                prioritized = []
+                for root in search_roots:
+                    # Check if emulator name (e.g., "eden", "yuzu") is in the path
+                    if any(k in root.as_posix().lower() for k in ["eden", "yuzu", "sudachi", "torzu"]) and \
+                       any(k in emu_lower for k in ["eden", "yuzu", "sudachi", "torzu"]):
+                        # Try to match specifically (e.g. eden root for eden emu)
+                        for k in ["eden", "yuzu", "sudachi", "torzu"]:
+                            if k in root.as_posix().lower() and k in emu_lower:
+                                prioritized.append(root)
+                                break
+                
+                search_roots = prioritized + [r for r in search_roots if r not in prioritized]
+
+                # --- Method 1: SQLite Game List Cache ---
                 if not title_id:
-                    m = re.search(r'01[0-9a-f]{14}', full_cmd)
-                    if m: title_id = m.group(0).upper()
-                
-                if title_id:
-                    search_roots = [emu_dir / "user", emu_dir / "data", Path(os.path.expandvars(r'%APPDATA%\yuzu')), Path(os.path.expandvars(r'%APPDATA%\eden')), Path(os.path.expandvars(r'%APPDATA%\sudachi'))]
                     for root in search_roots:
-                        if not root.exists(): continue
-                        for p in root.rglob(title_id):
-                            if p.is_dir() and "save" in str(p).lower(): return p
-                        save_base = root / "nand/user/save"
-                        if save_base.exists():
-                            profiles = [d for d in save_base.iterdir() if d.is_dir() and d.name != "0000000000000000"]
-                            if profiles:
-                                profile_id = profiles[0].name
-                                return save_base / "0000000000000000" / profile_id / title_id
-                    return search_roots[0] / "nand/user/save/0000000000000000/0000000000000000" / title_id
+                        db_path = root / "cache/game_list/game_list.db"
+                        if db_path.exists():
+                            try:
+                                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                                cursor = conn.cursor()
+                                query = "SELECT title_id FROM game_list WHERE name LIKE ? LIMIT 1"
+                                cursor.execute(query, (f"%{title}%",))
+                                row = cursor.fetchone()
+                                if row:
+                                    title_id = row[0].upper()
+                                    if not title_id.startswith("01"): title_id = f"01{title_id}"
+                                    self.log_signal.emit(f"🔍 [Switch] Found Title ID in emulator cache: {title_id}")
+                                conn.close()
+                                if title_id: break
+                            except Exception: pass
+
+                # --- Method 2: XCI Header Extraction ---
+                if not title_id and rom_path and rom_path.exists() and rom_path.suffix.lower() == ".xci":
+                    try:
+                        with open(rom_path, "rb") as f:
+                            f.seek(0x108)
+                            tid_bytes = f.read(8)
+                            title_id = tid_bytes[::-1].hex().upper()
+                            if re.match(r'^01[0-9A-F]{14}$', title_id):
+                                self.log_signal.emit(f"🔍 [Switch] Detected Title ID from XCI header: {title_id}")
+                            else: title_id = None
+                    except Exception: pass
+
+                # --- Method 3: Fixed Recency Scan ---
+                if not title_id:
+                    self.log_signal.emit(f"🔍 [Switch] Scanning for recently modified save folders...")
+                    recent_tid = None
+                    max_mtime = 0
+                    for root in search_roots:
+                        save_base = root / "nand/user/save/0000000000000000"
+                        if not save_base.exists(): continue
+                        for profile_dir in save_base.iterdir():
+                            if not profile_dir.is_dir(): continue
+                            for tid_dir in profile_dir.iterdir():
+                                if tid_dir.is_dir() and re.match(r'^01[0-9A-F]{14}$', tid_dir.name):
+                                    mtime = tid_dir.stat().st_mtime
+                                    if mtime > max_mtime:
+                                        max_mtime = mtime
+                                        recent_tid = tid_dir.name
+                    if recent_tid:
+                        title_id = recent_tid
+                        self.log_signal.emit(f"✨ [Switch] Matched recent save folder: {title_id}")
+
+                # --- Method 4: Regex fallback ---
+                if not title_id:
+                    m_tid = re.search(r'01[0-9A-F]{14}', full_cmd, re.IGNORECASE)
+                    if m_tid:
+                        title_id = m_tid.group(0).upper()
+                        self.log_signal.emit(f"🔍 [Switch] Detected Title ID from command line: {title_id}")
+
+                # Final Path Resolution
+                if title_id:
+                    for root in search_roots:
+                        save_base = root / "nand/user/save/0000000000000000"
+                        if not save_base.exists(): continue
+                        
+                        for profile_dir in save_base.iterdir():
+                            if not profile_dir.is_dir(): continue
+                            candidate = profile_dir / title_id
+                            if candidate.exists():
+                                self.log_signal.emit(f"✨ [Switch] Found save in: {candidate}")
+                                return candidate
+                        
+                        profiles = [d for d in save_base.iterdir() if d.is_dir()]
+                        if profiles:
+                            final_path = profiles[0] / title_id
+                            self.log_signal.emit(f"✨ [Switch] Targeted save location: {final_path}")
+                            return final_path
+                
+                return None
 
             # 2. GAMECUBE / WII / NGC (DOLPHIN)
             elif "Dolphin" in emu_display_name or platform in ["gc", "wii", "ngc"]:
