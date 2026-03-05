@@ -107,6 +107,12 @@ class LibraryTab(QWidget):
         self.refresh_btn.clicked.connect(self.main_window.fetch_library_and_populate)
         filter_layout.addWidget(self.refresh_btn)
         
+        self.retry_btn = QPushButton("⚠️ Retry")
+        self.retry_btn.setStyleSheet("background: #e65100; color: white; padding: 4px 10px;")
+        self.retry_btn.setVisible(False)
+        self.retry_btn.clicked.connect(self.main_window.fetch_library_and_populate)
+        filter_layout.addWidget(self.retry_btn)
+        
         layout.addLayout(filter_layout)
 
         # Grid area
@@ -129,6 +135,7 @@ class LibraryTab(QWidget):
         self.main_window.fetch_generation += 1
         my_generation = self.main_window.fetch_generation
         self.main_window.image_fetch_queue = []
+        self.retry_btn.setVisible(False)
         
         for i in reversed(range(self.grid_layout.count())):
             item = self.grid_layout.itemAt(i)
@@ -160,3 +167,15 @@ class LibraryTab(QWidget):
         # Local import to avoid circular dependency with dialogs.py
         from src.ui.dialogs import GameDetailDialog
         GameDetailDialog(game, self.client, self.config, self.main_window, self.main_window).exec()
+
+    def show_empty_message(self, message):
+        for i in reversed(range(self.grid_layout.count())):
+            item = self.grid_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setParent(None)
+        
+        empty_label = QLabel(message)
+        empty_label.setAlignment(Qt.AlignCenter)
+        empty_label.setStyleSheet("color: #888; font-size: 14px; padding: 40px;")
+        self.grid_layout.addWidget(empty_label, 0, 0)
+        self.retry_btn.setVisible(True)

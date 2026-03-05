@@ -13,7 +13,7 @@ from PySide6.QtGui import QIcon, QPixmap, QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QSettings, Slot, Signal
 
 from src.ui.threads import (ImageFetcher, BiosDownloader, DolphinDownloader, 
-                            DirectDownloader, GithubDownloader)
+                            DirectDownloader, GithubDownloader, ConflictResolveThread)
 from src.ui.widgets import get_resource_path, DownloadQueueWidget, format_speed
 from src.ui.dialogs import SetupDialog, SettingsDialog, WelcomeDialog, ConflictDialog
 from src.ui.tabs.library import LibraryTab
@@ -115,8 +115,17 @@ class WingosyMainWindow(QMainWindow):
                 QMessageBox.warning(self, "Session Expired", "Your session has expired. Please log in again.")
                 self.open_settings()
                 return
+            
+            if res != "REAUTH_REQUIRED" and not isinstance(res, list):
+                self.log("❌ Unexpected response from server. Check your RomM version.")
+                self._show_empty_library_message("Could not load library. Check logs.")
+                return
                 
             self.all_games = res
+            if isinstance(res, list) and len(res) == 0:
+                self._show_empty_library_message("No games found. Check your RomM library or platform filter.")
+                return
+
             platforms = sorted(list(set(g.get('platform_display_name') for g in self.all_games if g.get('platform_display_name'))))
             
             self.library_tab.platform_filter.blockSignals(True)
@@ -128,6 +137,9 @@ class WingosyMainWindow(QMainWindow):
             self.library_tab.populate_grid(self.all_games)
         except Exception as e:
             self.log(f"❌ Error fetching library: {e}")
+
+    def _show_empty_library_message(self, message):
+        self.library_tab.show_empty_message(message)
 
     def open_fw(self, emu_name):
         # Local import to avoid circular dependency with dialogs.py
@@ -347,7 +359,11 @@ class WingosyMainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             mode = dialog.result_mode
             if mode == "cloud":
-                self.watcher.pull_server_save(rom_id, title, local_path, os.path.isdir(local_path), force=True)
+                t = ConflictResolveThread(self.watcher, rom_id, title, local_path, os.path.isdir(local_path))
+                t.finished.connect(lambda ok: self.log("✅ Cloud save applied." if ok else "❌ Cloud save apply failed."))
+                t.finished.connect(lambda t=t: self.active_threads.remove(t) if t in self.active_threads else None)
+                self.active_threads.append(t)
+                t.start()
             elif mode == "both":
                 cloud_bak = str(local_path) + ".cloud_backup"
                 if os.path.exists(cloud_bak):
@@ -382,8 +398,8 @@ class WingosyMainWindow(QMainWindow):
         menu = QMenu()
         menu.addAction("Show", self.showNormal)
         menu.addAction("Exit", QApplication.instance().quit)
-        self.ti.setContextMenu(menu)
-        self.ti.show()
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.show()
 
     def closeEvent(self, event):
         settings = QSettings("Wingosy", "WingosyLauncher")

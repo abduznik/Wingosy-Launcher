@@ -324,10 +324,11 @@ class CoreDownloadThread(QThread):
             downloaded = 0
             start = time.time()
             with open(temp_zip, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024*1024):
+                for chunk in r.iter_content(chunk_size=8192):
                     if self.isInterruptionRequested():
                         f.close()
                         if temp_zip.exists(): temp_zip.unlink()
+                        self.finished.emit(False, "Download cancelled.")
                         return
                     if chunk:
                         f.write(chunk)
@@ -359,3 +360,23 @@ class CoreDownloadThread(QThread):
             if temp_zip.exists(): temp_zip.unlink()
             if extract_temp.exists(): shutil.rmtree(extract_temp)
             self.finished.emit(False, str(e))
+
+class ConflictResolveThread(QThread):
+    finished = Signal(bool)
+    
+    def __init__(self, watcher, rom_id, title, local_path, is_folder):
+        super().__init__()
+        self.watcher = watcher
+        self.rom_id = rom_id
+        self.title = title
+        self.local_path = local_path
+        self.is_folder = is_folder
+    
+    def run(self):
+        try:
+            self.watcher.pull_server_save(
+                self.rom_id, self.title, self.local_path, self.is_folder, force=True
+            )
+            self.finished.emit(True)
+        except Exception:
+            self.finished.emit(False)

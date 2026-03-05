@@ -99,15 +99,28 @@ class DownloadQueueWidget(QWidget):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setAlignment(Qt.AlignTop)
-        self.downloads = {} # thread: DownloadRow
+        self._rows = {} # thread: (row_widget, name_label, pbar, cancel_btn, speed_label)
 
     def add_download(self, name, thread):
         row = DownloadRow(name, thread, self)
-        self.downloads[thread] = row
+        self._rows[thread] = (row, row.name_label, row.pbar, row.cancel_btn, row.speed_label)
         self.layout.addWidget(row)
 
     def remove_download(self, thread):
-        if thread in self.downloads:
-            row = self.downloads.pop(thread)
-            row.setParent(None)
-            row.deleteLater()
+        if thread in self._rows:
+            row_widget, name_label, pbar, cancel_btn, speed_label = self._rows[thread]
+            # Show brief completion state
+            pbar.setValue(100)
+            speed_label.setText("✅ Done")
+            cancel_btn.setVisible(False)
+            # Remove after 3 seconds
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(3000, lambda: self._remove_row(thread))
+
+    def _remove_row(self, thread):
+        if thread in self._rows:
+            row_widget = self._rows[thread][0]
+            self.layout.removeWidget(row_widget)
+            row_widget.setParent(None)
+            row_widget.deleteLater()
+            del self._rows[thread]

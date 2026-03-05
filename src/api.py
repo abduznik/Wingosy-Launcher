@@ -148,7 +148,7 @@ class RomMClient:
         try:
             path = save_item.get('download_path') or save_item.get('path')
             url = path if path.startswith('http') else f"{self.host}{path}"
-            r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=60)
+            r = requests.get(url, headers=self.get_auth_headers(), stream=True, timeout=30)
             if r.status_code == 200:
                 with open(target_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
