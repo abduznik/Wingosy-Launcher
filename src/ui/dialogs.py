@@ -9,12 +9,12 @@ from pathlib import Path
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
                              QLabel, QLineEdit, QPushButton, QDialogButtonBox, 
                              QMessageBox, QProgressBar, QComboBox, QFileDialog, 
-                             QSizePolicy, QApplication)
-from PySide6.QtCore import Qt, Signal, QThread, QTimer
+                             QSizePolicy, QApplication, QWidget)
+from PySide6.QtCore import Qt, Signal, QThread, QTimer, QEventLoop
 from PySide6.QtGui import QPixmap, QDesktopServices
 
 from src.ui.threads import (UpdaterThread, SelfUpdateThread,
-                             ConnectionTestThread, RomDownloader, CoreDownloadThread, ImageFetcher)
+                             ConnectionTestThread, RomDownloader, CoreDownloadThread, ImageFetcher, ConflictResolveThread)
 from src.ui.widgets import format_speed, get_resource_path, RETROARCH_PLATFORMS, RETROARCH_CORES
 
 class WelcomeDialog(QDialog):
@@ -123,7 +123,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.config = config_manager
         self.main_window = main_window
-        self.resize(400, 500)
+        self.resize(400, 450)
         self.settings_layout = QVBoxLayout(self)
         self.settings_layout.addWidget(QLabel(f"<b>RomM Host:</b> {self.config.get('host')}"))
         
@@ -393,6 +393,7 @@ class GameDetailDialog(QDialog):
         
         try:
             # Build launch arguments
+            args = []
             if emu_display_name and "RetroArch" in emu_display_name:
                 core_name = RETROARCH_CORES.get(platform)
                 if core_name:
@@ -419,6 +420,75 @@ class GameDetailDialog(QDialog):
                     self.main_window.log(f"⚠️ No known RetroArch core for {platform}, launching without core")
             else:
                 args = [emu_data['path'], str(local_rom)]
+
+            # Pre-launch sync
+            watcher = self.main_window.watcher
+            rom_id = self.game['id']
+            title = self.game['name']
+            full_cmd = f"\"{emu_data['path']}\" \"{local_rom}\"".lower()
+            save_path = watcher.resolve_save_path(emu_display_name, title, full_cmd, emu_data['path'], platform)
+            
+            if save_path:
+                save_path = str(Path(save_path).resolve())
+                is_folder = platform in ["switch", "ps3", "wii"]
+                if os.path.exists(save_path):
+                    is_folder = os.path.isdir(save_path)
+                
+                # Blocking sync with local event loop
+                loop = QEventLoop()
+                conflict_captured = []
+
+                def on_conflict(t, lp, td, rid):
+                    if rid == str(rom_id):
+                        conflict_captured.append((t, lp, td, rid))
+                        loop.quit()
+
+                watcher.conflict_signal.disconnect(self.main_window.handle_conflict)
+                watcher.conflict_signal.connect(on_conflict)
+
+                class PreLaunchSyncWorker(QThread):
+                    finished_sync = Signal()
+                    def run(self):
+                        watcher.pull_server_save(rom_id, title, save_path, is_folder)
+                        self.finished_sync.emit()
+
+                worker = PreLaunchSyncWorker()
+                worker.finished_sync.connect(loop.quit)
+                worker.start()
+                loop.exec()
+
+                watcher.conflict_signal.disconnect(on_conflict)
+                watcher.conflict_signal.connect(self.main_window.handle_conflict, Qt.QueuedConnection)
+
+                if conflict_captured:
+                    t, lp, td, rid = conflict_captured[0]
+                    dialog = ConflictDialog(t, self)
+                    if dialog.exec() == QDialog.Accepted:
+                        mode = dialog.result_mode
+                        if mode == "cloud":
+                            resolve_thread = ConflictResolveThread(watcher, rid, t, lp, is_folder)
+                            resolve_thread.start()
+                            resolve_thread.wait()
+                        elif mode == "both":
+                            cloud_bak = str(lp) + ".cloud_backup"
+                            if os.path.exists(cloud_bak):
+                                if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak)
+                                else: os.remove(cloud_bak)
+                            if os.path.isdir(td): shutil.copytree(td, cloud_bak)
+                            else: shutil.copy2(td, cloud_bak)
+                            self.main_window.log(f"📁 Cloud save backed up to: {cloud_bak}")
+                        
+                        if os.path.exists(td):
+                            try: shutil.rmtree(td) if os.path.isdir(td) else os.remove(td)
+                            except: pass
+                    else:
+                        # User cancelled conflict dialog - abort launch
+                        if os.path.exists(td):
+                            try: shutil.rmtree(td) if os.path.isdir(td) else os.remove(td)
+                            except: pass
+                        return
+
+                watcher.skip_next_pull_rom_id = str(rom_id)
 
             proc = subprocess.Popen(args)
             self.main_window.log(f"🚀 Launched {emu_data['exe']} with {rom_name} (PID: {proc.pid})")

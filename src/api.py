@@ -136,8 +136,8 @@ class RomMClient:
                 data = r.json()
                 items = data if isinstance(data, list) else data.get("items", [])
                 if items:
-                    # Sort by ID descending (newest first)
-                    items.sort(key=lambda x: x.get('id', 0), reverse=True)
+                    # Take all returned items, sort by ID descending (newest first)
+                    items.sort(key=lambda x: int(x.get('id', 0)), reverse=True)
                     return items[0]
             return None
         except Exception as e:
@@ -168,9 +168,10 @@ class RomMClient:
         try:
             url = f"{self.host}/api/saves"
             params = {"rom_id": rom_id, "emulator": emulator, "slot": "wingosy-windows"}
+            file_name = f"sync_{rom_id}.zip"
             
             with open(file_path, 'rb') as f:
-                files = {'saveFile': (os.path.basename(file_path), f, 'application/octet-stream')}
+                files = {'saveFile': (file_name, f, 'application/octet-stream')}
                 r = requests.post(url, params=params, headers=self.get_auth_headers(), files=files, timeout=60)
                 return r.status_code in [200, 201], r.text
         except Exception as e:

@@ -349,7 +349,7 @@ class CoreDownloadThread(QThread):
             
             # Cleanup
             if temp_zip.exists(): temp_zip.unlink()
-            if extract_temp.exists(): shutil.rmtree(extract_temp)
+            if extract_temp.exists(): shutil.rmtree(extract_temp, ignore_errors=True)
             
             if found_dll:
                 self.finished.emit(True, str(self.cores_dir / f"{self.core_name}"))
@@ -358,7 +358,7 @@ class CoreDownloadThread(QThread):
                 
         except Exception as e:
             if temp_zip.exists(): temp_zip.unlink()
-            if extract_temp.exists(): shutil.rmtree(extract_temp)
+            if extract_temp.exists(): shutil.rmtree(extract_temp, ignore_errors=True)
             self.finished.emit(False, str(e))
 
 class ConflictResolveThread(QThread):

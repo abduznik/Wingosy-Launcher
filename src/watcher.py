@@ -131,35 +131,26 @@ class WingosyWatcher(QThread):
             self.log_signal.emit("☁️ No cloud saves found.")
             return
 
-        save_id = str(latest_save['id'])
-        if not force and self.sync_cache.get(str(rom_id)) == save_id:
-            self.log_signal.emit(f"☁️ Cloud save ({save_id}) already applied.")
+        server_updated_at = latest_save.get('updated_at', '')
+        
+        # Determine cached updated_at, handling potential dict from multi-slot era
+        rid_str = str(rom_id)
+        cached_val = self.sync_cache.get(rid_str)
+        cached_updated_at = cached_val.get('updated_at', '') if isinstance(cached_val, dict) else cached_val
+        
+        if not force and cached_updated_at == server_updated_at:
+            self.log_signal.emit("☁️ Cloud save already up to date.")
             return
 
         temp_dl = str(self.tmp_dir / f"cloud_check_{rom_id}")
         if self.client.download_save(latest_save, temp_dl):
             is_zip = zipfile.is_zipfile(temp_dl)
-            if is_zip:
-                server_hash = calculate_zip_content_hash(temp_dl)
-            else:
-                server_hash = calculate_file_hash(temp_dl)
                 
-            local_hash = None
-            if os.path.exists(local_path):
-                local_hash = calculate_folder_hash(local_path) if is_folder else calculate_file_hash(local_path)
-
-            if not force and local_hash and server_hash != local_hash:
+            if not force and os.path.exists(local_path) and rid_str in self.sync_cache:
                 # Save Conflict Detected
                 self.log_signal.emit(f"⚠️ Save conflict detected for {title}!")
-                self.conflict_signal.emit(title, local_path, temp_dl, str(rom_id))
+                self.conflict_signal.emit(title, local_path, temp_dl, rid_str)
                 return # Stop here, wait for UI resolution
-
-            if not force and local_hash and server_hash == local_hash:
-                self.log_signal.emit("☁️ Local save identical to cloud.")
-                self.sync_cache[str(rom_id)] = save_id
-                self.save_cache()
-                os.remove(temp_dl)
-                return
 
             self.log_signal.emit(f"📥 Cloud save is different. Updating...")
             
@@ -209,7 +200,7 @@ class WingosyWatcher(QThread):
                 else:
                     shutil.copy2(temp_dl, local_path)
                 
-                self.sync_cache[str(rom_id)] = save_id
+                self.sync_cache[rid_str] = server_updated_at
                 self.save_cache()
                 self.log_signal.emit("✨ Cloud save applied!")
                 self.notify_signal.emit(title, "☁️ Cloud save applied")
@@ -493,6 +484,7 @@ class WingosyWatcher(QThread):
                 if success:
                     self.log_signal.emit("✨ Sync Complete!")
                     if str(data['rom_id']) in self.sync_cache:
+                        # Clear cache so next pull sees the new version
                         del self.sync_cache[str(data['rom_id'])]
                         self.save_cache()
                 else:
