@@ -106,7 +106,7 @@ class ConfigManager:
             if should_migrate:
                 try:
                     if self.config_dir.exists():
-                        shutil.rmtree(self.config_dir)
+                        shutil.rmtree(self.config_dir, ignore_errors=True)
                     shutil.copytree(old_dir, self.config_dir)
                     print(f"Successfully migrated all settings and library from {old_dir}")
                 except Exception as e:

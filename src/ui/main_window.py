@@ -367,12 +367,12 @@ class WingosyMainWindow(QMainWindow):
             elif mode == "both":
                 cloud_bak = str(local_path) + ".cloud_backup"
                 if os.path.exists(cloud_bak):
-                    if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak)
+                    if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak, ignore_errors=True)
                     else: os.remove(cloud_bak)
                 shutil.copy2(temp_dl, cloud_bak) if not os.path.isdir(temp_dl) else shutil.copytree(temp_dl, cloud_bak)
                 self.log(f"📁 Cloud save backed up to: {cloud_bak}")
         if os.path.exists(temp_dl):
-            try: os.remove(temp_dl) if not os.path.isdir(temp_dl) else shutil.rmtree(temp_dl)
+            try: os.remove(temp_dl) if not os.path.isdir(temp_dl) else shutil.rmtree(temp_dl, ignore_errors=True)
             except: pass
 
     @Slot(str, str)

@@ -447,12 +447,18 @@ class GameDetailDialog(QDialog):
                 watcher.conflict_signal.connect(on_conflict)
 
                 class PreLaunchSyncWorker(QThread):
-                    finished_sync = Signal()
+                    finished_sync = Signal(str) # server_updated_at
                     def run(self):
+                        latest = watcher.client.get_latest_save(rom_id)
+                        ua = latest.get('updated_at', '') if latest else ''
                         watcher.pull_server_save(rom_id, title, save_path, is_folder)
-                        self.finished_sync.emit()
+                        self.finished_sync.emit(ua)
+
+                server_ua_container = [None]
+                def set_ua(ua): server_ua_container[0] = ua
 
                 worker = PreLaunchSyncWorker()
+                worker.finished_sync.connect(set_ua)
                 worker.finished_sync.connect(loop.quit)
                 worker.start()
                 loop.exec()
@@ -465,26 +471,45 @@ class GameDetailDialog(QDialog):
                     dialog = ConflictDialog(t, self)
                     if dialog.exec() == QDialog.Accepted:
                         mode = dialog.result_mode
+                        server_updated_at = server_ua_container[0]
+                        
                         if mode == "cloud":
+                            # We'll re-run pull with force=True inside a thread
+                            # To avoid duplicating logic, we can just use the ConflictResolveThread
+                            # but we need to update cache after.
                             resolve_thread = ConflictResolveThread(watcher, rid, t, lp, is_folder)
                             resolve_thread.start()
                             resolve_thread.wait()
+                            
+                            if server_updated_at:
+                                watcher.sync_cache[str(rid)] = server_updated_at
+                                watcher.save_cache()
+                        elif mode == "local":
+                            if server_updated_at:
+                                watcher.sync_cache[str(rid)] = server_updated_at
+                                watcher.save_cache()
                         elif mode == "both":
                             cloud_bak = str(lp) + ".cloud_backup"
                             if os.path.exists(cloud_bak):
-                                if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak)
+                                if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak, ignore_errors=True)
                                 else: os.remove(cloud_bak)
+                            
+                            # temp_dl (td) could be a file or folder depending on how it was downloaded
                             if os.path.isdir(td): shutil.copytree(td, cloud_bak)
                             else: shutil.copy2(td, cloud_bak)
                             self.main_window.log(f"📁 Cloud save backed up to: {cloud_bak}")
+                            
+                            if server_updated_at:
+                                watcher.sync_cache[str(rid)] = server_updated_at
+                                watcher.save_cache()
                         
                         if os.path.exists(td):
-                            try: shutil.rmtree(td) if os.path.isdir(td) else os.remove(td)
+                            try: shutil.rmtree(td, ignore_errors=True) if os.path.isdir(td) else os.remove(td)
                             except: pass
                     else:
                         # User cancelled conflict dialog - abort launch
                         if os.path.exists(td):
-                            try: shutil.rmtree(td) if os.path.isdir(td) else os.remove(td)
+                            try: shutil.rmtree(td, ignore_errors=True) if os.path.isdir(td) else os.remove(td)
                             except: pass
                         return
 
