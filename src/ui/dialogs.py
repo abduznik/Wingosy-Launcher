@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from PySide6.QtGui import QPixmap, QDesktopServices
 
 from src.ui.threads import (UpdaterThread, SelfUpdateThread,
-                             ConnectionTestThread, RomDownloader, CoreDownloadThread)
+                             ConnectionTestThread, RomDownloader, CoreDownloadThread, ImageFetcher)
 from src.ui.widgets import format_speed, get_resource_path, RETROARCH_PLATFORMS, RETROARCH_CORES
 
 class WelcomeDialog(QDialog):

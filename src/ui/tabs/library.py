@@ -157,5 +157,6 @@ class LibraryTab(QWidget):
                 self.main_window.image_fetch_queue.append(card)
 
     def open_detail(self, game):
+        # Local import to avoid circular dependency with dialogs.py
         from src.ui.dialogs import GameDetailDialog
         GameDetailDialog(game, self.client, self.config, self.main_window, self.main_window).exec()

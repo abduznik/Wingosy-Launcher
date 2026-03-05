@@ -1,19 +1,24 @@
-import sys
 import os
-import zipfile
+import sys
 import shutil
+import zipfile
 from pathlib import Path
+
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QTabWidget, QTextEdit, 
-                             QSystemTrayIcon, QMenu, QApplication, QFileDialog, QMessageBox)
+                             QSystemTrayIcon, QMenu, QApplication, QFileDialog, 
+                             QMessageBox, QDialog, QLineEdit, QDialogButtonBox, 
+                             QScrollArea)
 from PySide6.QtGui import QIcon, QPixmap, QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QSettings, Slot, Signal
 
-from src.ui.threads import ImageFetcher
+from src.ui.threads import (ImageFetcher, BiosDownloader, DolphinDownloader, 
+                            DirectDownloader, GithubDownloader)
 from src.ui.widgets import get_resource_path, DownloadQueueWidget, format_speed
 from src.ui.dialogs import SetupDialog, SettingsDialog, WelcomeDialog, ConflictDialog
 from src.ui.tabs.library import LibraryTab
 from src.ui.tabs.emulators import EmulatorsTab
+from src.utils import zip_path
 
 class WingosyMainWindow(QMainWindow):
     def __init__(self, config_manager, client, watcher_class, version):
@@ -125,10 +130,10 @@ class WingosyMainWindow(QMainWindow):
             self.log(f"❌ Error fetching library: {e}")
 
     def open_fw(self, emu_name):
-        from src.ui.dialogs import GameDetailDialog # Not used here but keep import order safe
+        # Local import to avoid circular dependency with dialogs.py
+        from src.ui.dialogs import GameDetailDialog 
         emu_data = self.config.get("emulators").get(emu_name)
         slug = emu_data.get("platform_slug")
-        from PySide6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox
         dialog = QDialog(self)
         dialog.setWindowTitle(f"{emu_name} BIOS / Firmware")
         dialog.resize(600, 500)
@@ -142,7 +147,6 @@ class WingosyMainWindow(QMainWindow):
         search_layout.addWidget(search_btn)
         layout.addLayout(search_layout)
         
-        from PySide6.QtWidgets import QScrollArea
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         container = QWidget()
@@ -217,8 +221,6 @@ class WingosyMainWindow(QMainWindow):
 
     def start_fw_download(self, emu, fw):
         try:
-            from src.ui.threads import BiosDownloader
-            from pathlib import Path
             emu_path = self.config.get("emulators")[emu].get("path")
             emu_folder = self.config.get("emulators")[emu].get("folder", emu)
             suggested = Path(emu_path).parent / "bios" if emu_path else Path(self.config.get("base_emu_path")) / emu_folder / "bios"
@@ -241,8 +243,6 @@ class WingosyMainWindow(QMainWindow):
 
     def dl_emu(self, name):
         try:
-            from src.ui.threads import DolphinDownloader, DirectDownloader, GithubDownloader
-            from pathlib import Path
             emu_data = self.config.get("emulators")[name]
             url, repo = emu_data.get("url"), emu_data.get("github")
             target_dir = Path(self.config.get("base_emu_path")) / emu_data.get("folder")
@@ -275,7 +275,6 @@ class WingosyMainWindow(QMainWindow):
                     self.config.set("emulators", self.config.get("emulators"))
                     self.emulators_tab.populate_emus()
                     self.log(f"📍 Path: {full_path}")
-                    from pathlib import Path
                     trigger = emu_data.get("portable_trigger")
                     if trigger:
                         trigger_path = Path(root) / trigger
@@ -287,7 +286,6 @@ class WingosyMainWindow(QMainWindow):
         else: self.log(f"❌ {path}")
 
     def st_ep(self, name):
-        from PySide6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(self, f"Select {name}.exe", filter="Executables (*.exe)")
         if path:
             emus = self.config.get("emulators")
@@ -314,7 +312,6 @@ class WingosyMainWindow(QMainWindow):
             path = emu_data.get("config_path")
             if not path: return
             
-            from PySide6.QtWidgets import QFileDialog, QMessageBox
             if mode == "export":
                 if not os.path.exists(path):
                     QMessageBox.warning(self, "Export Failed", f"Config path does not exist: {path}")
@@ -331,9 +328,6 @@ class WingosyMainWindow(QMainWindow):
                 source_zip, _ = QFileDialog.getOpenFileName(self, f"Import {name} Config", "", "ZIP Files (*.zip)")
                 if source_zip:
                     self.log(f"🔄 Importing {name} config from {source_zip}...")
-                    import shutil
-                    from pathlib import Path
-                    import zipfile
                     if os.path.exists(path):
                         shutil.move(path, f"{path}.bak")
                     
@@ -349,14 +343,12 @@ class WingosyMainWindow(QMainWindow):
 
     @Slot(str, str, str, str)
     def handle_conflict(self, title, local_path, temp_dl, rom_id):
-        from PySide6.QtWidgets import QDialog
         dialog = ConflictDialog(title, self)
         if dialog.exec() == QDialog.Accepted:
             mode = dialog.result_mode
             if mode == "cloud":
                 self.watcher.pull_server_save(rom_id, title, local_path, os.path.isdir(local_path), force=True)
             elif mode == "both":
-                import shutil
                 cloud_bak = str(local_path) + ".cloud_backup"
                 if os.path.exists(cloud_bak):
                     if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak)
@@ -364,7 +356,6 @@ class WingosyMainWindow(QMainWindow):
                 shutil.copy2(temp_dl, cloud_bak) if not os.path.isdir(temp_dl) else shutil.copytree(temp_dl, cloud_bak)
                 self.log(f"📁 Cloud save backed up to: {cloud_bak}")
         if os.path.exists(temp_dl):
-            import shutil
             try: os.remove(temp_dl) if not os.path.isdir(temp_dl) else shutil.rmtree(temp_dl)
             except: pass
 
@@ -385,15 +376,14 @@ class WingosyMainWindow(QMainWindow):
             self.watcher.start()
 
     def setup_tray(self):
-        from PySide6.QtWidgets import QApplication
         icon_path = get_resource_path("icon.png")
         icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon(QPixmap(32, 32))
         self.tray_icon = QSystemTrayIcon(icon, self)
         menu = QMenu()
         menu.addAction("Show", self.showNormal)
         menu.addAction("Exit", QApplication.instance().quit)
-        self.tray_icon.setContextMenu(menu)
-        self.tray_icon.show()
+        self.ti.setContextMenu(menu)
+        self.ti.show()
 
     def closeEvent(self, event):
         settings = QSettings("Wingosy", "WingosyLauncher")
