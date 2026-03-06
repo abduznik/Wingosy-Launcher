@@ -15,7 +15,116 @@ from PySide6.QtGui import QPixmap, QDesktopServices
 
 from src.ui.threads import (UpdaterThread, SelfUpdateThread,
                              ConnectionTestThread, RomDownloader, CoreDownloadThread, ImageFetcher, ConflictResolveThread)
-from src.ui.widgets import format_speed, get_resource_path, RETROARCH_PLATFORMS, RETROARCH_CORES
+from src.ui.widgets import format_speed, get_resource_path
+from src.platforms import RETROARCH_PLATFORMS, RETROARCH_CORES, platform_matches
+from src.utils import read_retroarch_cfg, write_retroarch_cfg_values
+
+_retroarch_autosave_checked = False  # module level to prompt once per session
+_ppsspp_assets_checked = False
+
+def check_retroarch_autosave(ra_exe_path, platform_slug, parent):
+    global _retroarch_autosave_checked
+    if _retroarch_autosave_checked:
+        return
+    _retroarch_autosave_checked = True
+    
+    # Skip PSP — it manages its own saves
+    if platform_slug in ("psp", "playstation-portable"):
+        return
+    
+    cfg_path = Path(ra_exe_path).parent / "retroarch.cfg"
+    cfg = read_retroarch_cfg(str(cfg_path))
+    
+    auto_save = cfg.get("savestate_auto_save", "false")
+    auto_load = cfg.get("savestate_auto_load", "false")
+    
+    if auto_save == "true" and auto_load == "true":
+        return  # already enabled
+    
+    result = QMessageBox.question(
+        parent,
+        "RetroArch Auto-Save",
+        "RetroArch auto save/load is currently disabled.\n\n"
+        "Would you like Wingosy to enable it?\n\n"
+        "This sets savestate_auto_save and savestate_auto_load "
+        "to true in retroarch.cfg.",
+        QMessageBox.Yes | QMessageBox.No
+    )
+    if result == QMessageBox.Yes:
+        from src.utils import write_retroarch_cfg_values
+        write_retroarch_cfg_values(str(cfg_path), {
+            "savestate_auto_save": "true",
+            "savestate_auto_load": "true"
+        })
+        QMessageBox.information(
+            parent,
+            "RetroArch Auto-Save",
+            "RetroArch auto-save enabled. ✅"
+        )
+
+def check_ppsspp_assets(ra_exe_path, parent):
+    global _ppsspp_assets_checked
+    if _ppsspp_assets_checked:
+        return
+    _ppsspp_assets_checked = True
+    
+    system_ppsspp = Path(ra_exe_path).parent / "system" / "PPSSPP"
+    zim_path = system_ppsspp / "ppge_atlas.zim"
+    if zim_path.exists():
+        return
+    
+    result = QMessageBox.question(
+        parent,
+        "PPSSPP Assets Missing",
+        "PPSSPP requires asset files to run correctly.\n\n"
+        "ppge_atlas.zim is missing from:\n"
+        f"{system_ppsspp}\n\n"
+        "Would you like Wingosy to download them now?\n"
+        "(~2MB from buildbot.libretro.com)",
+        QMessageBox.Yes | QMessageBox.No
+    )
+    if result != QMessageBox.Yes:
+        return
+    
+    progress = QMessageBox(parent)
+    progress.setWindowTitle("Downloading PPSSPP Assets")
+    progress.setText("Downloading PPSSPP assets...\nPlease wait.")
+    progress.setStandardButtons(QMessageBox.NoButton)
+    progress.show()
+    QApplication.processEvents()
+    
+    try:
+        import urllib.request, zipfile, tempfile
+        url = "https://buildbot.libretro.com/assets/system/PPSSPP.zip"
+        system_ppsspp.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".zip",
+                                         delete=False) as tmp:
+            tmp_path = tmp.name
+        urllib.request.urlretrieve(url, tmp_path)
+        with zipfile.ZipFile(tmp_path, 'r') as z:
+            for member in z.namelist():
+                relative = member
+                if relative.startswith("PPSSPP/"):
+                    relative = relative[len("PPSSPP/"):]
+                if not relative:
+                    continue
+                target = system_ppsspp / relative
+                if member.endswith("/"):
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with z.open(member) as src, \
+                         open(target, 'wb') as dst:
+                        dst.write(src.read())
+        Path(tmp_path).unlink(missing_ok=True)
+        progress.close()
+        QMessageBox.information(parent, "PPSSPP Assets Ready",
+            "PPSSPP assets downloaded successfully. ✅")
+    except Exception as e:
+        progress.close()
+        QMessageBox.warning(parent, "Download Failed",
+            f"Could not download PPSSPP assets:\n{e}\n\n"
+            f"You can manually place them in:\n{system_ppsspp}")
 
 class WelcomeDialog(QDialog):
     def __init__(self, parent=None):
@@ -392,13 +501,13 @@ class GameDetailDialog(QDialog):
         
         if not emu_data:
             for name, data in self.config.get("emulators").items():
-                if data.get("platform_slug") == platform:
+                if platform_matches(platform, data):
                     if data.get("path") and os.path.exists(data.get("path")):
                         emu_data = data
                         emu_display_name = name
                         break
                 # Special case for Dolphin (historical naming)
-                if platform in ["gc", "wii", "ngc"] and name == "GameCube / Wii":
+                if platform_matches(platform, data) and name == "GameCube / Wii":
                     if data.get("path") and os.path.exists(data.get("path")):
                         emu_data = data
                         emu_display_name = name
@@ -407,7 +516,7 @@ class GameDetailDialog(QDialog):
         # Pass 2: RetroArch Fallback
         if not emu_data:
             for name, data in self.config.get("emulators").items():
-                if data.get("platform_slug") == "multi":
+                if platform_matches("multi", data):
                     if data.get("path") and os.path.exists(data.get("path")):
                         emu_data = data
                         emu_display_name = name
@@ -428,7 +537,15 @@ class GameDetailDialog(QDialog):
             # Build launch arguments
             args = []
             if emu_display_name and "RetroArch" in emu_display_name:
+                # Once-per-session auto-save prompt
+                check_retroarch_autosave(emu_data["path"], platform, self)
+
                 core_name = RETROARCH_CORES.get(platform)
+
+                # PSP asset check
+                if platform == "psp" or core_name == "ppsspp_libretro.dll":
+                    check_ppsspp_assets(emu_data["path"], self)
+
                 if core_name:
                     # Look for the core relative to the RetroArch exe location
                     emu_dir_path = Path(emu_data['path']).parent
@@ -466,7 +583,10 @@ class GameDetailDialog(QDialog):
             
             if save_path:
                 save_path = str(Path(save_path).resolve())
-                is_folder = platform in ["switch", "ps3", "wii", "wiiu", "n3ds"]
+                folder_platforms = ["switch", "nintendo-switch", "ps3", "playstation-3",
+                                    "wii", "nintendo-wii", "wiiu", "wii-u", "nintendo-wii-u",
+                                    "n3ds", "3ds", "nintendo-3ds"]
+                is_folder = platform in folder_platforms
                 if os.path.exists(save_path):
                     is_folder = os.path.isdir(save_path)
 

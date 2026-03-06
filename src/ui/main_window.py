@@ -19,6 +19,7 @@ from src.ui.dialogs import SetupDialog, SettingsDialog, WelcomeDialog, ConflictD
 from src.ui.tabs.library import LibraryTab
 from src.ui.tabs.emulators import EmulatorsTab
 from src.utils import zip_path
+from src.platforms import RETROARCH_PLATFORMS, platform_matches
 
 class LibraryFetchThread(QThread):
     finished = Signal(object)  # emits the result (list or "REAUTH_REQUIRED")
@@ -27,6 +28,20 @@ class LibraryFetchThread(QThread):
         self.client = client
     def run(self):
         result = self.client.fetch_library()
+        if isinstance(result, list):
+            # Pre-calculate local ROM existence in background thread to avoid UI lag
+            base_rom = self.client.config.get("base_rom_path")
+            if base_rom:
+                base_path = Path(base_rom)
+                for g in result:
+                    rom_name = g.get('fs_name')
+                    platform = g.get('platform_slug')
+                    exists = False
+                    if rom_name:
+                        # Check platform subfolder and root
+                        if (base_path / platform / rom_name).exists() or (base_path / rom_name).exists():
+                            exists = True
+                    g['_local_exists'] = exists
         self.finished.emit(result)
 
 class WingosyMainWindow(QMainWindow):
@@ -117,10 +132,30 @@ class WingosyMainWindow(QMainWindow):
             if new_fetcher:
                 self.active_image_fetchers.append(new_fetcher)
 
-    def fetch_library_and_populate(self):
+    def fetch_library_and_populate(self, force_refresh=False):
+        """
+        force_refresh=False (default): show cache instantly, 
+                                        refresh in background silently.
+        force_refresh=True: wipe cache display, fetch fresh from server.
+        """
         self.library_tab.refresh_btn.setEnabled(False)
         self.library_tab.retry_btn.setVisible(False)
-        self.log("🔄 Loading library...")
+
+        if not force_refresh:
+            # Try to show cached library immediately
+            cached_games, cache_age = self.client.load_library_cache()
+            if cached_games:
+                age_str = (f"{int(cache_age/60)}m" if cache_age < 3600
+                           else f"{int(cache_age/3600)}h")
+                self.log(f"📦 Cached library: {len(cached_games)} games "
+                         f"({age_str} old) — checking for updates...")
+                self._populate_from_games(cached_games)
+            else:
+                self.log("🔄 Loading library...")
+        else:
+            self.log("🔄 Force refresh — fetching from server...")
+
+        # Always fetch fresh in background regardless
         self._fetch_thread = LibraryFetchThread(self.client)
         self._fetch_thread.finished.connect(self._on_library_fetched)
         self._fetch_thread.start()
@@ -134,24 +169,52 @@ class WingosyMainWindow(QMainWindow):
             return
         if not isinstance(res, list):
             self.log("❌ Unexpected response from server. Check your RomM version.")
-            self._show_empty_library_message("Could not load library. Check logs.")
+            # Thread-safe UI update
+            QTimer.singleShot(0, lambda: self._show_empty_library_message("Could not load library. Check logs."))
             return
-        self.all_games = res
-        if len(res) == 0:
+        
+        self.log(f"✅ Library loaded: {len(res)} games")
+        # Thread-safe UI update
+        QTimer.singleShot(0, lambda: self._populate_from_games(res))
+
+    def _populate_from_games(self, games):
+        """Populate the UI with a list of games. Called from cache or fresh fetch."""
+        # Optimization: If the games list is identical to what we have, 
+        # only update if we were previously empty
+        is_new_data = (len(games) != len(self.all_games))
+        self.all_games = games
+        
+        if not games:
             self._show_empty_library_message(
                 "No games found. Check your RomM library or platform filter.")
             return
-        platforms = sorted(list(set(
-            g.get('platform_display_name') for g in self.all_games 
-            if g.get('platform_display_name')
-        )))
-        self.library_tab.platform_filter.blockSignals(True)
-        self.library_tab.platform_filter.clear()
-        self.library_tab.platform_filter.addItem("All Platforms")
-        self.library_tab.platform_filter.addItems(platforms)
-        self.library_tab.platform_filter.blockSignals(False)
-        self.library_tab.populate_grid(self.all_games)
-        self.log(f"✅ Library loaded: {len(res)} games")
+
+        # Only rebuild the platform list if data is actually new/different
+        if is_new_data:
+            platforms = sorted(set(
+                g.get('platform_display_name') for g in games
+                if g.get('platform_display_name')
+            ))
+            self.library_tab.platform_filter.blockSignals(True)
+            previously_selected = self.library_tab.platform_filter.currentText()
+            self.library_tab.platform_filter.clear()
+            self.library_tab.platform_filter.addItem("All Platforms")
+            self.library_tab.platform_filter.addItems(platforms)
+            
+            # Add No Emulator filter if needed
+            all_known = set(RETROARCH_PLATFORMS)
+            for emu in self.config.get("emulators", {}).values():
+                all_known.update(emu.get("platform_slugs", [emu.get("platform_slug", "")]))
+            has_unknown = any(g.get("platform_slug") not in all_known for g in games)
+            if has_unknown:
+                self.library_tab.platform_filter.addItem("⚠️ No Emulator")
+                
+            idx = self.library_tab.platform_filter.findText(previously_selected)
+            if idx >= 0:
+                self.library_tab.platform_filter.setCurrentIndex(idx)
+            self.library_tab.platform_filter.blockSignals(False)
+        
+        self.library_tab.populate_grid(games)
 
     def _show_empty_library_message(self, message):
         self.library_tab.show_empty_message(message)

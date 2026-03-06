@@ -14,6 +14,34 @@ class RomMClient:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
+        self.library_cache_path = Path.home() / ".wingosy" / "library_cache.json"
+
+    def save_library_cache(self, games):
+        """Save fetched library to disk for instant startup next time."""
+        try:
+            self.library_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_data = {
+                "timestamp": __import__("time").time(),
+                "games": games
+            }
+            with open(self.library_cache_path, 'w', encoding='utf-8') as f:
+                import json
+                json.dump(cache_data, f)
+        except Exception as e:
+            print(f"[Cache] Save error: {e}")
+
+    def load_library_cache(self):
+        """Load cached library. Returns (games, age_seconds) or (None, 0)."""
+        try:
+            if not self.library_cache_path.exists():
+                return None, 0
+            import json, time
+            with open(self.library_cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            age = time.time() - data.get("timestamp", 0)
+            return data.get("games", []), age
+        except Exception:
+            return None, 0
 
     def test_connection(self):
         try:
@@ -56,21 +84,45 @@ class RomMClient:
         return h
 
     def fetch_library(self):
-        try:
-            url = f"{self.host}/api/roms"
-            # Match original working version params
-            params = {"page": 1, "page_size": 5000, "size": 1000}
-            r = requests.get(url, headers=self.get_auth_headers(), params=params, timeout=15)
-            if r.status_code == 200:
-                self.user_games = r.json().get("items", [])
-                return self.user_games
-            elif r.status_code == 401:
+        url = f"{self.host}/api/roms"
+        all_items = []
+        limit = 50
+        offset = 0
+        total = None
+
+        while True:
+            params = {"limit": limit, "offset": offset}
+            r = requests.get(url, headers=self.get_auth_headers(),
+                            params=params, timeout=30)
+
+            if r.status_code == 401:
                 return "REAUTH_REQUIRED"
-            print(f"[API] Error fetching library ({r.status_code})")
-            return []
-        except Exception as e:
-            print(f"[API] Exception fetching library: {e}")
-            return []
+            if r.status_code != 200:
+                break
+
+            data = r.json()
+            items = (data.get("items", []) if isinstance(data, dict)
+                     else data if isinstance(data, list) else [])
+
+            if total is None:
+                total = (data.get("total") or data.get("count") or 0
+                         if isinstance(data, dict) else 0)
+
+            if not items:
+                break
+
+            all_items.extend(items)
+
+            if total and len(all_items) >= total:
+                break
+
+            offset += limit
+
+        print(f"[Library] Fetched {len(all_items)} games "
+              f"in {offset // limit + 1} page(s)")
+        self.user_games = all_items
+        self.save_library_cache(all_items)
+        return all_items
 
     def get_cover_url(self, game):
         """Returns a valid URL for the game cover, preferring local RomM assets."""

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton
 from PySide6.QtCore import Qt
+from src.platforms import RETROARCH_PLATFORMS, RETROARCH_CORES, platform_matches
 
 def get_resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -20,42 +21,6 @@ def format_speed(bytes_per_sec):
 
 def elide_text(text, max_chars=24):
     return text if len(text) <= max_chars else text[:max_chars].rstrip() + "…"
-
-RETROARCH_PLATFORMS = [
-    "n64", "psx", "ps1", "snes", "nes", "gba", "gbc", "gb",
-    "genesis", "megadrive", "sega-genesis", "32x", "segacd",
-    "gamegear", "mastersystem", "atari2600", "atari7800",
-    "lynx", "ngp", "ngpc", "pcengine", "wonderswan", "msx",
-    "arcade", "fba", "neogeo", "c64", "dos", "3do", "jaguar",
-    "saturn", "dreamcast", "nds", "gba", "psp"
-]
-
-RETROARCH_CORES = {
-    "n64":        "mupen64plus_next_libretro.dll",
-    "psx":        "pcsx_rearmed_libretro.dll",
-    "ps1":        "pcsx_rearmed_libretro.dll",
-    "snes":       "snes9x_libretro.dll",
-    "nes":        "nestopia_libretro.dll",
-    "gba":        "mgba_libretro.dll",
-    "gbc":        "gambatte_libretro.dll",
-    "gb":         "gambatte_libretro.dll",
-    "genesis":    "genesis_plus_gx_libretro.dll",
-    "megadrive":  "genesis_plus_gx_libretro.dll",
-    "sega-genesis": "genesis_plus_gx_libretro.dll",
-    "32x":        "picodrive_libretro.dll",
-    "segacd":     "genesis_plus_gx_libretro.dll",
-    "gamegear":   "genesis_plus_gx_libretro.dll",
-    "mastersystem": "genesis_plus_gx_libretro.dll",
-    "atari2600":  "stella2014_libretro.dll",
-    "atari7800":  "prosystem_libretro.dll",
-    "psp":        "ppsspp_libretro.dll",
-    "nds":        "desmume2015_libretro.dll",
-    "saturn":     "yabasanshiro_libretro.dll",
-    "dreamcast":  "flycast_libretro.dll",
-    "arcade":     "mame_libretro.dll",
-    "neogeo":     "fbalpha2012_neogeo_libretro.dll",
-    "pcengine":   "mednafen_pce_libretro.dll",
-}
 
 class DownloadRow(QWidget):
     def __init__(self, name, thread, parent_queue):
@@ -81,43 +46,35 @@ class DownloadRow(QWidget):
         self.cancel_btn.clicked.connect(self.cancel)
         layout.addWidget(self.cancel_btn)
         
-        if hasattr(thread, 'progress'):
-            thread.progress.connect(self.update_progress)
+        # Connect signals
+        self.thread.progress.connect(self.update_progress)
+        self.thread.finished.connect(self.on_finished)
 
-    def update_progress(self, val, speed=0):
-        self.pbar.setValue(val)
-        if speed > 0:
-            self.speed_label.setText(format_speed(speed))
+    def update_progress(self, p, speed):
+        self.pbar.setValue(p)
+        self.speed_label.setText(format_speed(speed))
 
     def cancel(self):
-        if self.thread:
-            self.thread.requestInterruption()
+        self.thread.requestInterruption()
+        self.on_finished(False, "Cancelled")
+
+    def on_finished(self, ok, msg):
         self.parent_queue.remove_download(self.thread)
 
 class DownloadQueueWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self):
+        super().__init__()
         self.layout = QVBoxLayout(self)
-        self.layout.setAlignment(Qt.AlignTop)
-        self._rows = {} # thread: (row_widget, name_label, pbar, cancel_btn, speed_label)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(2)
+        self._rows = {}
 
     def add_download(self, name, thread):
         row = DownloadRow(name, thread, self)
-        self._rows[thread] = (row, row.name_label, row.pbar, row.cancel_btn, row.speed_label)
         self.layout.addWidget(row)
+        self._rows[thread] = (row, name)
 
     def remove_download(self, thread):
-        if thread in self._rows:
-            row_widget, name_label, pbar, cancel_btn, speed_label = self._rows[thread]
-            # Show brief completion state
-            pbar.setValue(100)
-            speed_label.setText("✅ Done")
-            cancel_btn.setVisible(False)
-            # Remove after 3 seconds
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(3000, lambda: self._remove_row(thread))
-
-    def _remove_row(self, thread):
         if thread in self._rows:
             row_widget = self._rows[thread][0]
             self.layout.removeWidget(row_widget)

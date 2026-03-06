@@ -26,6 +26,7 @@ class ConfigManager:
                 "config_path": str(Path(os.path.expandvars(r'%APPDATA%\yuzu\config'))),
                 "github": "pineapple-emu/pineapple-src",
                 "platform_slug": "switch",
+                "platform_slugs": ["switch", "nintendo-switch"],
                 "folder": "yuzu",
                 "portable_trigger": "user"
             },
@@ -36,6 +37,7 @@ class ConfigManager:
                 "config_path": str(Path(os.path.expandvars(r'%APPDATA%\eden\config'))),
                 "url": "https://github.com/eden-emulator/Releases/releases/download/v0.2.0-rc1/Eden-Windows-v0.2.0-rc1-amd64-msvc-standard.zip",
                 "platform_slug": "switch",
+                "platform_slugs": ["switch", "nintendo-switch"],
                 "folder": "eden",
                 "portable_trigger": "user"
             },
@@ -46,6 +48,7 @@ class ConfigManager:
                 "config_path": "",
                 "github": "RPCS3/rpcs3-binaries-win",
                 "platform_slug": "ps3",
+                "platform_slugs": ["ps3", "playstation-3", "playstation3"],
                 "folder": "rpcs3",
                 "asset_keywords_required": ["windows", "x64"],
                 "asset_keywords_exclude": ["installer", "symbols", "debug", "android", "mac", "linux"]
@@ -58,6 +61,7 @@ class ConfigManager:
                 "config_path": str(Path(os.path.expandvars(r'%APPDATA%\RetroArch\retroarch.cfg'))),
                 "url": "https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/RetroArch.7z",
                 "platform_slug": "multi",
+                "platform_slugs": ["multi"],
                 "folder": "retroarch",
                 "asset_keywords_required": ["windows", "x64"],
                 "asset_keywords_exclude": ["installer", "symbols", "debug", "android", "mac", "linux"]
@@ -70,6 +74,7 @@ class ConfigManager:
                 "config_path": str(Path.home() / "Documents" / "Dolphin Emulator" / "Config"),
                 "dolphin_latest": True,
                 "platform_slug": "gc",
+                "platform_slugs": ["gc", "ngc", "wii", "gamecube", "nintendo-gamecube", "nintendo-wii", "wii-u-vc"],
                 "folder": "dolphin",
                 "portable_trigger": "portable.txt"
             },
@@ -81,6 +86,7 @@ class ConfigManager:
                 "config_path": str(Path(os.path.expandvars(r'%APPDATA%\PCSX2\config'))),
                 "github": "PCSX2/pcsx2",
                 "platform_slug": "ps2",
+                "platform_slugs": ["ps2", "playstation-2", "playstation2"],
                 "folder": "pcsx2",
                 "portable_trigger": "portable.txt",
                 "asset_keywords_required": ["windows", "x64"],
@@ -93,6 +99,7 @@ class ConfigManager:
                 "config_path": str(Path(os.path.expandvars(r'%APPDATA%\Cemu'))),
                 "url": "https://github.com/cemu-project/Cemu/releases/download/v2.0-60/cemu-2.0-60-windows-x64.zip",
                 "platform_slug": "wiiu",
+                "platform_slugs": ["wiiu", "wii-u", "nintendo-wii-u", "nintendo-wiiu"],
                 "folder": "cemu",
                 "portable_trigger": "portable.txt"
             },
@@ -103,6 +110,7 @@ class ConfigManager:
                 "config_path": str(Path(os.path.expandvars(r'%APPDATA%\Azahar\config'))),
                 "github": "azahar-emu/azahar",
                 "platform_slug": "n3ds",
+                "platform_slugs": ["n3ds", "3ds", "nintendo-3ds", "nintendo3ds", "new-nintendo-3ds", "new-nintendo-3ds-xl"],
                 "folder": "azahar",
                 "asset_keywords_required": ["windows", "msys2"],
                 "asset_keywords_exclude": ["msvc", "installer", "symbols", "android", "mac", "linux", "appimage"]

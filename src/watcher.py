@@ -5,18 +5,11 @@ import re
 import shutil
 import zipfile
 import json
+import hashlib
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from src.utils import calculate_folder_hash, calculate_file_hash, calculate_zip_content_hash, zip_path
-
-RETROARCH_PLATFORMS = [
-    "n64", "psx", "ps1", "snes", "nes", "gba", "gbc", "gb",
-    "genesis", "megadrive", "sega-genesis", "32x", "segacd",
-    "gamegear", "mastersystem", "atari2600", "atari7800",
-    "lynx", "ngp", "ngpc", "pcengine", "wonderswan", "msx",
-    "arcade", "fba", "neogeo", "c64", "dos", "3do", "jaguar",
-    "saturn", "dreamcast", "nds", "gba", "psp"
-]
+from src.platforms import RETROARCH_PLATFORMS, platform_matches
 
 class WingosyWatcher(QThread):
     log_signal = Signal(str)
@@ -70,6 +63,58 @@ class WingosyWatcher(QThread):
             
             time.sleep(2)
 
+    def _hash_retroarch_game(self, save_path, is_folder=False):
+        """
+        Hash the SRM + all state files for a RetroArch game.
+        For folder-based cores (PSP), hashes the entire folder tree.
+        """
+        if is_folder:
+            from src.utils import calculate_folder_hash
+            try:
+                return calculate_folder_hash(str(save_path))
+            except Exception:
+                return None
+
+        srm = Path(save_path)
+        core_dir = srm.parent
+        stem = srm.stem  # e.g. "Super Punch-Out!! (USA)"
+        
+        # Collect: the .srm + any .stateN / .state.auto files
+        files = []
+        if srm.exists():
+            files.append(srm)
+        for f in sorted(core_dir.glob(f"{stem}.state*")):
+            files.append(f)
+        
+        if not files:
+            return None
+        
+        # Hash all files together
+        h = hashlib.sha256()
+        for f in files:
+            try:
+                h.update(f.read_bytes())
+            except Exception:
+                pass
+        return h.hexdigest()
+
+    def _get_folder_mtime(self, path):
+        """Return the newest mtime of any file in a folder tree."""
+        if not os.path.exists(path):
+            return 0
+        if os.path.isfile(path):
+            return os.path.getmtime(path)
+        newest = 0
+        for root, dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    t = os.path.getmtime(os.path.join(root, f))
+                    if t > newest:
+                        newest = t
+                except Exception:
+                    pass
+        return newest
+
     def track_session(self, proc, emu_display_name, game_data, local_rom_path, emu_path):
         """
         Explicitly track a process launched by the UI.
@@ -86,11 +131,14 @@ class WingosyWatcher(QThread):
             
             if save_path:
                 save_path = str(Path(save_path).resolve())
-                is_folder = platform in ["switch", "ps3", "wii", "wiiu", "n3ds"]
+                folder_platforms = ["switch", "nintendo-switch", "ps3", "playstation-3",
+                                    "wii", "nintendo-wii", "wiiu", "wii-u", "nintendo-wii-u",
+                                    "n3ds", "3ds", "nintendo-3ds"]
+                is_folder = platform in folder_platforms
                 if os.path.exists(save_path):
                     is_folder = os.path.isdir(save_path)
                 
-                # Double-Pull Protection (already handled by Play button usually, but safe to keep)
+                # Double-Pull Protection
                 should_pull = self.config.get("auto_pull_saves", True)
                 if self.skip_next_pull_rom_id == str(rom_id):
                     should_pull = False
@@ -99,11 +147,12 @@ class WingosyWatcher(QThread):
                 if should_pull:
                     self.pull_server_save(rom_id, title, save_path, is_folder)
                 
-                # Track the session with hash BEFORE playing
-                h = None
-                if os.path.exists(save_path):
-                    try: h = calculate_folder_hash(save_path) if is_folder else calculate_file_hash(save_path)
-                    except Exception: pass
+                # Track the session with initial state
+                is_retroarch = emu_display_name == "Multi-Console (RetroArch)"
+                h = self._hash_retroarch_game(save_path, is_folder) if is_retroarch \
+                    else (calculate_folder_hash(save_path) if is_folder 
+                          else calculate_file_hash(save_path) 
+                          if os.path.exists(save_path) else None)
 
                 self.active_sessions[pid] = {
                     'emu': emu_display_name, 
@@ -111,8 +160,10 @@ class WingosyWatcher(QThread):
                     'save_path': save_path,
                     'title': title,
                     'initial_hash': h,
+                    'initial_mtime': self._get_folder_mtime(save_path),
                     'is_folder': is_folder,
-                    'start_time': time.time()
+                    'start_time': time.time(),
+                    'emu_path': emu_path
                 }
                 self.log_signal.emit(f"🎮 Tracking {title} on {emu_display_name} (PID: {pid})")
             else:
@@ -130,12 +181,13 @@ class WingosyWatcher(QThread):
 
         server_updated_at = latest_save.get('updated_at', '')
         
-        # Determine cached updated_at, handling potential dict from multi-slot era
+        # Determine cached updated_at
         rid_str = str(rom_id)
         cached_val = self.sync_cache.get(rid_str)
         cached_updated_at = cached_val.get('updated_at', '') if isinstance(cached_val, dict) else cached_val
         
-        if not force and cached_updated_at == server_updated_at:
+        # Only skip if timestamp matches AND the local file actually exists
+        if not force and cached_updated_at == server_updated_at and os.path.exists(local_path):
             self.log_signal.emit("☁️ Cloud save already up to date.")
             return
 
@@ -178,20 +230,16 @@ class WingosyWatcher(QThread):
                     if is_folder:
                         extract_parent = str(Path(local_path).parent)
                         folder_name = Path(local_path).name
-                        # Clear only the target folder, not siblings
                         if os.path.exists(local_path):
                             shutil.rmtree(local_path, ignore_errors=True)
                         os.makedirs(extract_parent, exist_ok=True)
                         with zipfile.ZipFile(temp_dl, 'r') as z:
-                            # Check if zip has a root folder matching our save folder
                             names = z.namelist()
                             has_root = any(n.startswith(folder_name + '/') or 
                                           n.startswith(folder_name + '\\') for n in names)
                             if has_root:
-                                # Zip already contains the folder, extract to parent
                                 z.extractall(extract_parent)
                             else:
-                                # Zip contains raw files, extract into the folder
                                 os.makedirs(local_path, exist_ok=True)
                                 z.extractall(local_path)
                     else:
@@ -211,6 +259,8 @@ class WingosyWatcher(QThread):
                                     with z.open(names[0]) as source, open(local_path, 'wb') as target:
                                         shutil.copyfileobj(source, target)
                 else:
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path, ignore_errors=True)
                     shutil.copy2(temp_dl, local_path)
                 
                 self.sync_cache[rid_str] = server_updated_at
@@ -253,16 +303,13 @@ class WingosyWatcher(QThread):
                 import sqlite3
                 title_id = None
                 rom_path = None
-                
-                # Extract ROM path from command line
                 m_path = re.search(r'("[^"]+\.(?:xci|nsp|nsz)")', full_cmd)
                 if not m_path: m_path = re.search(r'(\S+\.(?:xci|nsp|nsz))', full_cmd)
                 if m_path:
                     rom_path = Path(m_path.group(1).strip('"'))
 
                 search_roots = [
-                    emu_dir / "user", 
-                    emu_dir / "data", 
+                    emu_dir / "user", emu_dir / "data", 
                     Path(os.path.expandvars(r'%APPDATA%\eden')), 
                     Path(os.path.expandvars(r'%APPDATA%\yuzu')), 
                     Path(os.path.expandvars(r'%APPDATA%\sudachi')),
@@ -270,22 +317,16 @@ class WingosyWatcher(QThread):
                     Path(os.path.expandvars(r'%LOCALAPPDATA%\yuzu'))
                 ]
 
-                # Prioritize roots matching current emulator name
                 emu_lower = emu_display_name.lower()
                 prioritized = []
                 for root in search_roots:
-                    # Check if emulator name (e.g., "eden", "yuzu") is in the path
                     if any(k in root.as_posix().lower() for k in ["eden", "yuzu", "sudachi", "torzu"]) and \
                        any(k in emu_lower for k in ["eden", "yuzu", "sudachi", "torzu"]):
-                        # Try to match specifically (e.g. eden root for eden emu)
                         for k in ["eden", "yuzu", "sudachi", "torzu"]:
                             if k in root.as_posix().lower() and k in emu_lower:
-                                prioritized.append(root)
-                                break
-                
+                                prioritized.append(root); break
                 search_roots = prioritized + [r for r in search_roots if r not in prioritized]
 
-                # --- Method 1: SQLite Game List Cache (Schema-Aware) ---
                 if not title_id:
                     for root in search_roots:
                         db_path = root / "cache/game_list/game_list.db"
@@ -293,61 +334,35 @@ class WingosyWatcher(QThread):
                             try:
                                 conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                                 cursor = conn.cursor()
-                                
-                                # 1. Discover tables
                                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                                 tables = [row[0] for row in cursor.fetchall()]
-                                
                                 for table in tables:
-                                    # 2. Discover columns
                                     cursor.execute(f"PRAGMA table_info({table})")
                                     cols = [c[1].lower() for c in cursor.fetchall()]
-                                    
-                                    # 3. Identify candidate columns
                                     id_col = next((c for c in cols if c in ['title_id', 'program_id', 'id'] or ('id' in c and 'title' in c)), None)
                                     name_col = next((c for c in cols if c in ['name', 'title', 'game_name'] or 'name' in c or 'title' in c), None)
-                                    
                                     if id_col and name_col:
-                                        # 4. Attempt search
                                         cursor.execute(f"SELECT {id_col} FROM {table} WHERE {name_col} LIKE ? LIMIT 1", (f"%{title}%",))
                                         row = cursor.fetchone()
                                         if row:
                                             val = row[0]
-                                            # 5. Handle integer or hex string
-                                            if isinstance(val, int):
-                                                title_id = hex(val)[2:].upper().zfill(16)
-                                            else:
-                                                title_id = str(val).upper().replace('0X', '')
-                                            
-                                            # Validate pattern
-                                            if re.match(r'^[0-9A-F]{16}$', title_id):
-                                                self.log_signal.emit(f"🔍 [Switch] Found Title ID in emulator cache ({table}.{id_col}): {title_id}")
-                                                break
-                                            else:
-                                                title_id = None
+                                            title_id = hex(val)[2:].upper().zfill(16) if isinstance(val, int) else str(val).upper().replace('0X', '')
+                                            if re.match(r'^[0-9A-F]{16}$', title_id): break
+                                            else: title_id = None
                                 conn.close()
                                 if title_id: break
-                            except Exception:
-                                # Silent skip on error to fall through
-                                pass
+                            except Exception: pass
 
-                # --- Method 2: XCI Header Extraction ---
                 if not title_id and rom_path and rom_path.exists() and rom_path.suffix.lower() == ".xci":
                     try:
                         with open(rom_path, "rb") as f:
                             f.seek(0x108)
-                            tid_bytes = f.read(8)
-                            title_id = tid_bytes[::-1].hex().upper()
-                            if re.match(r'^01[0-9A-F]{14}$', title_id):
-                                self.log_signal.emit(f"🔍 [Switch] Detected Title ID from XCI header: {title_id}")
-                            else: title_id = None
+                            title_id = f.read(8)[::-1].hex().upper()
+                            if not re.match(r'^01[0-9A-F]{14}$', title_id): title_id = None
                     except Exception: pass
 
-                # --- Method 3: Fixed Recency Scan ---
                 if not title_id:
-                    self.log_signal.emit(f"🔍 [Switch] Scanning for recently modified save folders...")
-                    recent_tid = None
-                    max_mtime = 0
+                    recent_tid, max_mtime = None, 0
                     for root in search_roots:
                         save_base = root / "nand/user/save/0000000000000000"
                         if not save_base.exists(): continue
@@ -355,99 +370,67 @@ class WingosyWatcher(QThread):
                             if not profile_dir.is_dir(): continue
                             for tid_dir in profile_dir.iterdir():
                                 if tid_dir.is_dir() and re.match(r'^01[0-9A-F]{14}$', tid_dir.name):
-                                    mtime = tid_dir.stat().st_mtime
-                                    if mtime > max_mtime:
-                                        max_mtime = mtime
+                                    if tid_dir.stat().st_mtime > max_mtime:
+                                        max_mtime = tid_dir.stat().st_mtime
                                         recent_tid = tid_dir.name
-                    if recent_tid:
-                        title_id = recent_tid
-                        self.log_signal.emit(f"✨ [Switch] Matched recent save folder: {title_id}")
+                    if recent_tid: title_id = recent_tid
 
-                # --- Method 4: Regex fallback ---
-                if not title_id:
-                    m_tid = re.search(r'01[0-9A-F]{14}', full_cmd, re.IGNORECASE)
-                    if m_tid:
-                        title_id = m_tid.group(0).upper()
-                        self.log_signal.emit(f"🔍 [Switch] Detected Title ID from command line: {title_id}")
-
-                # Final Path Resolution
                 if title_id:
                     for root in search_roots:
                         save_base = root / "nand/user/save/0000000000000000"
                         if not save_base.exists(): continue
-                        
                         for profile_dir in save_base.iterdir():
                             if not profile_dir.is_dir(): continue
                             candidate = profile_dir / title_id
-                            if candidate.exists():
-                                self.log_signal.emit(f"✨ [Switch] Found save in: {candidate}")
-                                return candidate
-                        
+                            if candidate.exists(): return candidate
                         profiles = [d for d in save_base.iterdir() if d.is_dir()]
-                        if profiles:
-                            final_path = profiles[0] / title_id
-                            self.log_signal.emit(f"✨ [Switch] Targeted save location: {final_path}")
-                            return final_path
-                
+                        if profiles: return profiles[0] / title_id
                 return None
 
             # 2. GAMECUBE / WII / NGC (DOLPHIN)
             elif "Dolphin" in emu_display_name or platform in ["gc", "wii", "ngc", "gamecube", "nintendo-gamecube", "ngc"]:
                 user_dir = Path.home() / "Documents" / "Dolphin Emulator"
-                if (emu_dir / "portable.txt").exists():
-                    user_dir = emu_dir / "User"
-                elif (emu_dir / "User").exists():
-                    user_dir = emu_dir / "User"
+                if (emu_dir / "portable.txt").exists(): user_dir = emu_dir / "User"
+                elif (emu_dir / "User").exists(): user_dir = emu_dir / "User"
                 
                 game_id = None
                 if proc:
                     try:
                         for f in proc.open_files():
                             p = Path(f.path)
-                            if platform == "wii" and "title/00010000" in p.as_posix() and "data" in p.name:
-                                return p.parent
-                            if platform in ["gc", "ngc"] and (p.suffix.lower() in [".raw", ".gci", ".sav"]):
-                                return p
+                            if platform == "wii" and "title/00010000" in p.as_posix() and "data" in p.name: return p.parent
+                            if platform in ["gc", "ngc"] and (p.suffix.lower() in [".raw", ".gci", ".sav"]): return p
                             if "GameSettings" in p.as_posix() and p.suffix.lower() == ".ini":
-                                if len(p.stem) == 6 and re.match(r'[A-Z0-9]{6}', p.stem):
-                                    game_id = p.stem
+                                if len(p.stem) == 6 and re.match(r'[A-Z0-9]{6}', p.stem): game_id = p.stem
                     except Exception: pass
 
-                if not game_id:
-                    game_id = self.get_game_id_from_rom(full_cmd)
-                    
-                clean_title = re.sub(r'[^a-z0-9]', '', title.lower())
+                if not game_id: game_id = self.get_game_id_from_rom(full_cmd)
                 
                 for region in ["USA", "EUR", "JPN", "KOR", "JAP"]:
                     gci_folder = user_dir / f"GC/{region}/Card A"
                     if not gci_folder.exists(): continue
-
                     if game_id:
-                        short_id = game_id[:4]
-                        for f in gci_folder.glob(f"*{short_id}*.gci"): return f
-                        for f in gci_folder.glob(f"*-{short_id}-*.gci"): return f
-                        very_short_id = game_id[:3]
-                        for f in gci_folder.glob(f"*{very_short_id}*.gci"): return f
-
+                        for f in gci_folder.glob(f"*{game_id[:4]}*.gci"): return f
+                        for f in gci_folder.glob(f"*-{game_id[:4]}-*.gci"): return f
+                        for f in gci_folder.glob(f"*{game_id[:3]}*.gci"): return f
+                    clean_title = re.sub(r'[^a-z0-9]', '', title.lower())
                     for f in gci_folder.glob("*.gci"):
                         clean_f = re.sub(r'[^a-z0-9]', '', f.stem.lower())
-                        if clean_title in clean_f or clean_f in clean_title:
-                            return f
+                        if clean_title in clean_f or clean_f in clean_title: return f
 
                 if platform == "wii":
                     nand_base = user_dir / "Wii/title/00010000"
                     if nand_base.exists():
-                        subdirs = [d for d in nand_base.iterdir() if d.is_dir()]
-                        if subdirs:
-                            subdirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-                            for d in subdirs:
-                                if (d / "data").exists(): return d / "data"
+                        subdirs = sorted([d for d in nand_base.iterdir() if d.is_dir()], key=lambda x: x.stat().st_mtime, reverse=True)
+                        for d in subdirs:
+                            if (d / "data").exists(): return d / "data"
                 else:
                     gc_dir = user_dir / "GC"
                     search_paths = [gc_dir / "MemoryCardA.USA.raw", gc_dir / "MemoryCardA.EUR.raw", gc_dir / "MemoryCardA.JPN.raw", gc_dir / "MemoryCardA.raw"]
                     for p in search_paths:
                         if p.exists(): return p
                     return search_paths[0]
+
             # 3. PLAYSTATION 2
             elif "PlayStation 2" in emu_display_name or platform == "ps2":
                 search_paths = [emu_dir / "memcards" / "Mcd001.ps2", Path(os.path.expandvars(r'%APPDATA%\PCSX2\memcards\Mcd001.ps2')), Path.home() / "Documents" / "PCSX2" / "memcards" / "Mcd001.ps2"]
@@ -457,139 +440,159 @@ class WingosyWatcher(QThread):
 
             # 3.5 PLAYSTATION 3 (RPCS3)
             elif "PlayStation 3" in emu_display_name or platform == "ps3":
-                # Check for portable install first (dev_hdd0 in emu folder), then fallback to AppData
                 save_base = emu_dir / "dev_hdd0/home/00000001/savedata"
                 if not save_base.exists():
                     save_base = Path(os.path.expandvars(r'%APPDATA%\RPCS3\dev_hdd0\home\00000001\savedata'))
                 
                 if save_base.exists():
-                    # 1. Try to find folder matching Title ID in cmd line
                     tid_match = re.search(r'([A-Z]{4}\d{5})', full_cmd)
-                    if tid_match:
-                        return save_base / tid_match.group(1).upper()
-
-                    # 2. Fallback to existing logic (most recent subfolder with PARAM.SFO)
-                    subdirs = sorted(
-                        [d for d in save_base.iterdir() if d.is_dir() and (d / "PARAM.SFO").exists()],
-                        key=lambda x: x.stat().st_mtime, reverse=True
-                    )
-                    if subdirs:
-                        return subdirs[0]
+                    if tid_match: return save_base / tid_match.group(1).upper()
+                    subdirs = sorted([d for d in save_base.iterdir() if d.is_dir() and (d / "PARAM.SFO").exists()], key=lambda x: x.stat().st_mtime, reverse=True)
+                    if subdirs: return subdirs[0]
                 return save_base
 
             # 5. WII U (CEMU)
             elif "Cemu" in emu_display_name or platform == "wiiu":
-                # Check for portable install first (mlc01 in emu folder)
                 mlc_path = emu_dir / "mlc01"
                 if not mlc_path.exists():
-                    # Try to read MLC path from Cemu settings.xml
                     settings_xml = emu_dir / "settings.xml"
                     if settings_xml.exists():
                         try:
                             import xml.etree.ElementTree as ET
-                            tree = ET.parse(settings_xml)
-                            root = tree.getroot()
-                            mlc_node = root.find('.//mlc_path')
-                            if mlc_node is not None and mlc_node.text:
-                                mlc_path = Path(mlc_node.text)
-                        except Exception:
-                            pass
-                
-                if not mlc_path or not mlc_path.exists():
-                    mlc_path = Path(os.path.expandvars(r'%APPDATA%\Cemu\mlc01'))
+                            mlc_node = ET.parse(settings_xml).getroot().find('.//mlc_path')
+                            if mlc_node is not None and mlc_node.text: mlc_path = Path(mlc_node.text)
+                        except Exception: pass
+                if not mlc_path or not mlc_path.exists(): mlc_path = Path(os.path.expandvars(r'%APPDATA%\Cemu\mlc01'))
                 
                 save_base = mlc_path / "usr/save/00050000"
                 if save_base.exists():
-                    title_dirs = sorted(
-                        [d for d in save_base.iterdir() if d.is_dir()],
-                        key=lambda x: x.stat().st_mtime, reverse=True
-                    )
+                    title_dirs = sorted([d for d in save_base.iterdir() if d.is_dir()], key=lambda x: x.stat().st_mtime, reverse=True)
                     for title_dir in title_dirs:
                         candidate = title_dir / "user" / "80000001"
-                        if candidate.exists() and any(candidate.iterdir()):
-                            return candidate
-                    # First launch - no save exists yet, find most likely title dir
-                    # and return the expected path so we know where to watch
+                        if candidate.exists() and any(candidate.iterdir()): return candidate
                     for title_dir in title_dirs:
-                        user_dir = title_dir / "user" / "80000001"
-                        if (title_dir / "user").exists():
-                            return user_dir
+                        if (title_dir / "user").exists(): return title_dir / "user" / "80000001"
                 return None
 
             # 6. NINTENDO 3DS (CITRA)
             elif any(x in emu_display_name for x in ["Citra", "Azahar", "3DS"]) or platform in ["3ds", "n3ds"]:
                 citra_base = Path(os.path.expandvars(r'%APPDATA%\Citra\sdmc\Nintendo 3DS'))
                 if citra_base.exists():
-                    # Walk to find most recently modified title save
-                    best = None
-                    best_mtime = 0
+                    best, max_mt = None, 0
                     for id1 in citra_base.iterdir():
                         for id2 in id1.iterdir():
                             title_base = id2 / "title/00040000"
                             if not title_base.exists(): continue
                             for tid in title_base.iterdir():
                                 candidate = tid / "data/00000001"
-                                if candidate.exists():
-                                    mtime = candidate.stat().st_mtime
-                                    if mtime > best_mtime:
-                                        best_mtime = mtime
-                                        best = candidate
-                    if best:
-                        return best
+                                if candidate.exists() and candidate.stat().st_mtime > max_mt:
+                                    max_mt, best = candidate.stat().st_mtime, candidate
+                    if best: return best
                 return Path(os.path.expandvars(r'%APPDATA%\Citra\sdmc'))
 
             # 4. RETROARCH
             elif "RetroArch" in emu_display_name or platform == "multi" or platform in RETROARCH_PLATFORMS:
-                rom_name = Path(title).stem.lower()
-                for game in self.client.user_games:
-                    if game['name'] == title: rom_name = Path(game['fs_name']).stem.lower()
-                search_paths = [emu_dir / "saves", Path(os.path.expandvars(r'%APPDATA%\RetroArch\saves'))]
-                for p in search_paths:
-                    if p.exists():
-                        for f in p.glob(f"*{rom_name}*.srm"): return f
-                return search_paths[0] / f"{rom_name}.srm"
+                game_item = next((g for g in self.client.user_games if g['name'] == title), None)
+                if not game_item: game_item = {"id": title, "name": title, "platform_slug": platform, "fs_name": title + ".rom"}
+                path, is_f = self.get_retroarch_save_path(game_item, {"path": emu_path})
+                if path: return Path(path)
         except Exception as e:
             self.log_signal.emit(f"⚠️ Error resolving save path: {e}")
-            
         return None
+
+    def get_retroarch_save_path(self, game, emu_data):
+        from src.platforms import RETROARCH_CORES, RETROARCH_CORE_SAVE_FOLDERS, RETROARCH_FOLDER_SAVE_CORES
+        ra_exe = emu_data.get("path", "")
+        if not ra_exe: return None, False
+        
+        saves_dir = Path(ra_exe).parent / "saves"
+        core_dll = RETROARCH_CORES.get(game.get("platform_slug", ""))
+        if not core_dll: return None, False
+        
+        core_name = core_dll.replace(".dll", "").replace(".so", "").replace("_libretro", "")
+        save_folder_name = RETROARCH_CORE_SAVE_FOLDERS.get(core_name, core_name)
+        core_saves = saves_dir / save_folder_name
+        if not core_saves.exists(): core_saves = saves_dir
+        
+        rom_name = game.get("fs_name", game.get("name", ""))
+        base_name = Path(rom_name).stem
+        
+        # Standard — point to the ACTUAL .srm path
+        if core_name == "ppsspp":
+            psp_savedata = saves_dir / "PPSSPP" / "PSP" / "SAVEDATA"
+            return str(psp_savedata), True
+            
+        return str(core_saves / f"{base_name}.srm"), False
 
     def handle_exit(self, data):
         try:
             self.log_signal.emit(f"🛑 Session Ended: {data['title']}")
-            time.sleep(2)
-            
             save_path = Path(data['save_path'])
-            if not save_path.exists():
+            
+            is_retroarch = data.get('emu') == "Multi-Console (RetroArch)"
+            if not save_path.exists() and not is_retroarch:
                 self.log_signal.emit(f"⚠️ Save file missing on exit: {save_path}. Skipping sync.")
                 return
-                
-            if data['is_folder'] and not any(save_path.iterdir()):
-                self.log_signal.emit("⚠️ Save folder empty on exit. Skipping sync.")
-                return
-                
-            new_h = calculate_folder_hash(str(save_path)) if data['is_folder'] else calculate_file_hash(str(save_path))
             
-            if new_h == data['initial_hash']:
+            # Capture hash IMMEDIATELY at process exit
+            if is_retroarch:
+                h_at_exit = self._hash_retroarch_game(str(save_path), data['is_folder'])
+            else:
+                h_at_exit = calculate_folder_hash(str(save_path)) if data['is_folder'] else calculate_file_hash(str(save_path))
+            
+            # Give emulator a moment to finish writing buffered files to disk
+            time.sleep(3)
+            
+            if is_retroarch:
+                new_h = self._hash_retroarch_game(str(save_path), data['is_folder'])
+            else:
+                new_h = calculate_folder_hash(str(save_path)) if data['is_folder'] else calculate_file_hash(str(save_path))
+            
+            initial_h = data.get('initial_hash')
+            
+            post_mtime = self._get_folder_mtime(str(save_path))
+            initial_mtime = data.get('initial_mtime', 0)
+            mtime_changed = post_mtime > initial_mtime
+            
+            # Change detected if final hash differs from initial (during play) 
+            # OR final hash differs from at_exit (post-exit flush)
+            has_hash_changed = (new_h != initial_h or (h_at_exit is not None and new_h != h_at_exit))
+
+            print(f"[DEBUG] {data['title']} exit: is_folder={data['is_folder']} save_path={save_path} exists={os.path.exists(save_path)} mtime_changed={mtime_changed} hash_changed={has_hash_changed}")
+
+            if not has_hash_changed and not mtime_changed:
                 self.log_signal.emit(f"⏭️ No changes in {data['title']}. Skipping sync.")
                 return
 
             self.log_signal.emit(f"📝 Changes detected! Syncing...")
             temp_zip = str(self.tmp_dir / f"sync_{data['rom_id']}.zip")
             try:
-                zip_path(str(save_path), temp_zip)
+                # For RetroArch, we need to zip ALL matching files (SRM + States) or the whole folder
+                if is_retroarch:
+                    if data['is_folder']:
+                        zip_path(str(save_path), temp_zip)
+                    else:
+                        srm = Path(data['save_path'])
+                        core_dir = srm.parent
+                        stem = srm.stem
+                        with zipfile.ZipFile(temp_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+                            if srm.exists(): zf.write(srm, srm.name)
+                            for f in core_dir.glob(f"{stem}.state*"):
+                                zf.write(f, f.name)
+                else:
+                    zip_path(str(save_path), temp_zip)
+                
                 success, msg = self.client.upload_save(data['rom_id'], data['emu'], temp_zip)
                 if success:
                     self.log_signal.emit("✨ Sync Complete!")
                     if str(data['rom_id']) in self.sync_cache:
-                        # Clear cache so next pull sees the new version
                         del self.sync_cache[str(data['rom_id'])]
                         self.save_cache()
-                else:
-                    self.log_signal.emit(f"❌ Sync Failed: {msg}")
+                else: self.log_signal.emit(f"❌ Sync Failed: {msg}")
             finally:
                 if os.path.exists(temp_zip):
                     try: os.remove(temp_zip)
-                    except Exception: pass
+                    except: pass
             
             # Playtime tracking
             try:
@@ -598,21 +601,12 @@ class WingosyWatcher(QThread):
                 playtime_data = {}
                 if playtime_path.exists():
                     try:
-                        with open(playtime_path, 'r') as f:
-                            playtime_data = json.load(f)
-                    except Exception: pass
-                
+                        with open(playtime_path, 'r') as f: playtime_data = json.load(f)
+                    except: pass
                 rid_str = str(data['rom_id'])
-                current_total = playtime_data.get(rid_str, 0)
-                new_total = current_total + session_minutes
+                new_total = playtime_data.get(rid_str, 0) + session_minutes
                 playtime_data[rid_str] = new_total
-                
-                with open(playtime_path, 'w') as f:
-                    json.dump(playtime_data, f)
-                
+                with open(playtime_path, 'w') as f: json.dump(playtime_data, f)
                 self.log_signal.emit(f"🕐 Session: {session_minutes:.1f} min | Total: {new_total:.1f} min")
-            except Exception as e:
-                print(f"[Watcher] Playtime error: {e}")
-
-        except Exception as e:
-            self.log_signal.emit(f"❌ Error during sync: {e}")
+            except Exception as e: print(f"[Watcher] Playtime error: {e}")
+        except Exception as e: self.log_signal.emit(f"❌ Error during sync: {e}")

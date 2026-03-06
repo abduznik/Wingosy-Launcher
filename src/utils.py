@@ -64,3 +64,63 @@ def zip_path(source_path, output_zip):
                     zf.write(file, source.name / file.relative_to(source))
         else:
             zf.write(source, source.name)
+
+def read_retroarch_cfg(cfg_path):
+    """
+    Parse a retroarch.cfg file into a dict.
+    Returns {} if file doesn't exist or can't be read.
+    Lines look like: key = "value" or key = value
+    """
+    result = {}
+    try:
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                key, _, val = line.partition('=')
+                key = key.strip()
+                val = val.strip().strip('"')
+                result[key] = val
+    except Exception:
+        pass
+    return result
+
+def write_retroarch_cfg_values(cfg_path, updates: dict):
+    """
+    Write key=value pairs into an existing retroarch.cfg.
+    Updates existing keys in-place, appends new ones at end.
+    Preserves all other lines exactly.
+    Returns True on success, False on failure.
+    """
+    try:
+        cfg_path = Path(cfg_path)
+        if cfg_path.exists():
+            lines = cfg_path.read_text(encoding='utf-8').splitlines()
+        else:
+            lines = []
+
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if '=' in stripped and not stripped.startswith('#'):
+                key = stripped.partition('=')[0].strip()
+                if key in updates:
+                    new_lines.append(f'{key} = "{updates[key]}"')
+                    updated_keys.add(key)
+                    continue
+            new_lines.append(line)
+
+        # Append any keys that weren't already in the file
+        for key, val in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f'{key} = "{val}"')
+
+        cfg_path.write_text('\n'.join(new_lines) + '\n', encoding='utf-8')
+        return True
+    except Exception as e:
+        print(f"[retroarch_cfg] Failed to write {cfg_path}: {e}")
+        return False
