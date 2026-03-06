@@ -555,10 +555,21 @@ class GameDetailDialog(QDialog):
                 watcher.skip_next_pull_rom_id = str(rom_id)
                 self.main_window.log(f"✅ Pre-launch sync complete for {title}.")
 
-            # Create a clean environment for the emulator (remove Wingosy's Qt variables)
+            # Create a clean environment for the emulator
             clean_env = os.environ.copy()
+            
+            # 1. Remove Wingosy's Qt variables
             for key in ["QT_QPA_PLATFORM_PLUGIN_PATH", "QT_PLUGIN_PATH", "QT_QPA_FONTDIR", "QT_QPA_PLATFORM", "QT_STYLE_OVERRIDE"]:
                 clean_env.pop(key, None)
+            
+            # 2. Scrub PATH of PyInstaller internal directory to prevent DLL conflicts (e.g. vcruntime140.dll)
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                mei_path = str(Path(sys._MEIPASS)).lower()
+                path_val = clean_env.get("PATH", "")
+                path_parts = path_val.split(os.pathsep)
+                # Keep only parts that don't point inside our temp directory
+                new_path_parts = [p for p in path_parts if mei_path not in str(Path(p)).lower()]
+                clean_env["PATH"] = os.pathsep.join(new_path_parts)
 
             proc = subprocess.Popen(args, env=clean_env)
             self.main_window.log(f"🚀 Launched {emu_data['exe']} with {rom_name} (PID: {proc.pid})")
