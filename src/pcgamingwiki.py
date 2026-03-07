@@ -12,11 +12,13 @@ def fetch_save_locations(game_title, windows_games_dir=""):
         # Step 1: Find the page title
         page_title = _find_page_title(game_title)
         if not page_title:
+            logging.debug(f"[Wiki] No page title found for {game_title}")
             return []
 
         # Step 2: Get the wikitext
         wikitext = _get_wikitext(page_title)
         if not wikitext:
+            logging.debug(f"[Wiki] No wikitext found for {page_title}")
             return []
 
         # Step 3: Parse save locations
@@ -35,7 +37,7 @@ def _find_page_title(game_title):
         "format": "json"
     }
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, timeout=3)
         if r.status_code == 200:
             data = r.json()
             pages = data.get("query", {}).get("pages", {})
@@ -50,7 +52,7 @@ def _find_page_title(game_title):
             "srsearch": game_title,
             "format": "json"
         }
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, timeout=3)
         if r.status_code == 200:
             data = r.json()
             search_results = data.get("query", {}).get("search", [])
@@ -69,7 +71,7 @@ def _get_wikitext(page_title):
         "format": "json"
     }
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, timeout=3)
         if r.status_code == 200:
             data = r.json()
             return data.get("parse", {}).get("wikitext", {}).get("*", "")
@@ -78,44 +80,98 @@ def _get_wikitext(page_title):
     return None
 
 def _parse_save_locations(wikitext, game_title, windows_games_dir):
-    # Regex to find Windows save paths in templates, handling multiple paths per line
-    # Pattern: {{Game data/saves|Windows|PATH1 | PATH2}}
-    pattern = r'\{\{Game data/saves\|Windows\|([^}]+(?:\|[^}]+)*)\}\}'
-    matches = re.findall(pattern, wikitext, re.IGNORECASE)
-    
     suggestions = []
-    seen_paths = set()
-    
-    for full_match in matches:
-        # A single match might contain multiple paths separated by |
-        path_segments = [p.strip() for p in full_match.split('|')]
-        
-        for raw_path in path_segments:
-            # Basic filtering for user-specific or platform-specific skips
-            lower_path = raw_path.lower()
-            if not raw_path or any(skip in lower_path for skip in ["steam", "linux", "wine", "{{p|uid}}", "{{p|hkcu}}", "{{p|osxhome}}", "{{p|xdgconfighome}}", "{{p|linuxhome}}"]):
+    seen = set()
+
+    for line in wikitext.splitlines():
+        # Must contain Windows save template
+        if "Game data/saves" not in line:
+            continue
+        if "|Windows|" not in line:
+            continue
+
+        logging.debug(f"[Wiki] Found Windows save line: {line.strip()}")
+
+        # Extract everything after |Windows|
+        try:
+            after = line.split("|Windows|", 1)[1]
+        except IndexError:
+            continue
+
+        # Remove the trailing }} of the outer template — strip from the right
+        # Strategy: remove only the LAST }}
+        if after.endswith("}}"):
+            after = after[:-2]
+        after = after.strip()
+
+        # Split multiple paths by pipe |
+        # BUT we must not split inside {{p|x}}
+        paths = _safe_split_paths(after)
+
+        for raw in paths:
+            raw = raw.strip()
+            if not raw:
                 continue
-                
-            expanded = _expand_wiki_path(raw_path, game_title, windows_games_dir)
+
+            lower = raw.lower()
+            # Skip non-Windows platforms and user-specific IDs
+            if any(s in lower for s in [
+                "steam", "linux", "wine",
+                "{{p|uid}}", "{{p|hkcu}}",
+                "{{p|osxhome}}", "{{p|xdg",
+                "{{p|linux"
+            ]):
+                continue
+
+            expanded = _expand_wiki_path(raw, game_title, windows_games_dir)
             if not expanded:
                 continue
-            
-            # Deduplicate by expanded path
-            if expanded.lower() in seen_paths:
+
+            if expanded.lower() in seen:
                 continue
-            seen_paths.add(expanded.lower())
-            
-            # Determine path type for the UI badge
-            path_type = _get_path_type(expanded, windows_games_dir)
+            seen.add(expanded.lower())
 
             suggestions.append({
-                "raw_path": raw_path,
+                "raw_path": raw,
                 "expanded_path": expanded,
-                "path_type": path_type,
+                "path_type": _get_path_type(expanded, windows_games_dir),
                 "exists": os.path.exists(expanded)
             })
-        
+
     return suggestions
+
+def _safe_split_paths(s):
+    """
+    Split a path string on | but NOT inside {{ }}.
+    e.g. "{{p|x}}\\foo | {{p|y}}\\bar"
+    → ["{{p|x}}\\foo", "{{p|y}}\\bar"]
+    """
+    parts = []
+    depth = 0
+    current = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if s[i:i+2] == "{{":
+            depth += 1
+            current.append("{{")
+            i += 2
+            continue
+        if s[i:i+2] == "}}":
+            depth -= 1
+            current.append("}}")
+            i += 2
+            continue
+        if c == "|" and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    if current:
+        parts.append("".join(current).strip())
+    return [p for p in parts if p]
 
 def _get_path_type(expanded_path, windows_games_dir):
     path_lower = expanded_path.lower()
@@ -136,48 +192,51 @@ def _get_path_type(expanded_path, windows_games_dir):
         return "Other"
 
 def _expand_wiki_path(path, game_title, windows_games_dir):
-    # Strip filename or wildcard part (everything after the last backslash or forward slash)
-    # The wiki sometimes uses / or \
-    clean_path = path
-    last_slash = max(clean_path.rfind('\\'), clean_path.rfind('/'))
-    if last_slash != -1:
-        # Check if the part after the slash looks like a file/wildcard (contains . or *)
-        after = clean_path[last_slash+1:]
-        if '.' in after or '*' in after:
-            clean_path = clean_path[:last_slash+1]
+    logging.debug(f"[Wiki] Raw path: {path}")
+    expanded = path
 
-    expanded = clean_path
-    
-    # PCGamingWiki Template mapping
-    substitutions = {
-        "{{p|userprofile}}": "%USERPROFILE%",
-        "{{p|appdata}}": "%APPDATA%",
-        "{{p|localappdata}}": "%LOCALAPPDATA%",
-        "{{p|programdata}}": "%PROGRAMDATA%",
-        "{{p|public}}": "%PUBLIC%",
-        "{{p|programfiles}}": "%PROGRAMFILES%",
-        "{{p|programfiles(x86)}}": "%PROGRAMFILES(X86)%",
-        "{{p|game}}": os.path.join(windows_games_dir, game_title) if windows_games_dir else ""
-    }
-    
-    for wiki_var, sys_var in substitutions.items():
-        if sys_var:
-            expanded = expanded.replace(wiki_var, sys_var)
-        elif wiki_var in expanded:
-            # If we need {{p|game}} but windows_games_dir is missing, we can't expand fully
-            return None
+    # Map of EXACT wikitext templates → real paths
+    subs = [
+        ("{{p|userprofile}}", os.environ.get("USERPROFILE", "")),
+        ("{{p|appdata}}", os.environ.get("APPDATA", "")),
+        ("{{p|localappdata}}", os.environ.get("LOCALAPPDATA", "")),
+        ("{{p|programdata}}", os.environ.get("PROGRAMDATA", "")),
+        ("{{p|public}}", os.environ.get("PUBLIC", "")),
+        ("{{p|programfiles}}", os.environ.get("PROGRAMFILES", "")),
+        ("{{p|programfiles(x86)}}", os.environ.get("PROGRAMFILES(X86)", "")),
+        ("{{p|game}}", os.path.join(windows_games_dir, game_title) if windows_games_dir else ""),
+    ]
 
-    # Replace forward slashes with backslashes for Windows
-    expanded = expanded.replace("/", "\\")
-    
-    # Clean up duplicate backslashes and trailing ones
-    expanded = re.sub(r'\\+', r'\\', expanded)
-    expanded = expanded.rstrip("\\")
-    
-    # Final environment expansion
-    try:
-        final_path = os.path.expandvars(expanded)
-        # Ensure we have an absolute path
-        return str(Path(final_path).resolve())
-    except Exception:
+    for template, value in subs:
+        if not value:
+            if template in expanded.lower():
+                # Unknown/empty variable → skip
+                return None
+            continue
+        # Case-insensitive replace
+        idx = expanded.lower().find(template.lower())
+        while idx != -1:
+            expanded = (expanded[:idx]
+                       + value
+                       + expanded[idx+len(template):])
+            idx = expanded.lower().find(template.lower())
+
+    # If any {{p| remains → unrecognized, skip
+    if "{{p|" in expanded.lower():
+        logging.debug(f"[Wiki] Unresolved template: {path}")
         return None
+
+    # Strip wildcard filenames e.g. \*.dat
+    expanded = re.sub(r'[\\/]\*\.[a-zA-Z0-9]+$', '', expanded)
+    
+    # Strip bare filenames with extension at end
+    # only if it looks like a file not a folder
+    # (has extension and no trailing slash)
+    if re.search(r'\.[a-zA-Z0-9]{2,4}$', expanded):
+        expanded = os.path.dirname(expanded)
+
+    # Normalize — NO resolve() as it uses cwd
+    expanded = os.path.normpath(expanded)
+
+    logging.debug(f"[Wiki] Expanded: {expanded!r}")
+    return expanded

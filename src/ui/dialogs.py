@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QSizePolicy, QApplication, QWidget, QSpinBox, QScrollArea,
                              QCheckBox, QListWidget, QListWidgetItem)
 from PySide6.QtCore import Qt, Signal, QThread, QTimer, QEventLoop
-from PySide6.QtGui import QPixmap, QDesktopServices
+from PySide6.QtGui import QPixmap, QDesktopServices, QFont, QFontMetrics
 
 from src.ui.threads import (UpdaterThread, SelfUpdateThread,
                              ConnectionTestThread, RomDownloader, CoreDownloadThread, ImageFetcher, ConflictResolveThread, GameDescriptionFetcher, ExtractionThread, WikiFetcherThread)
@@ -332,35 +332,58 @@ class WikiSuggestionsDialog(QDialog):
     def __init__(self, suggestions, game_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Save Location Suggestions — {game_name}")
-        self.setMinimumSize(600, 450)
+        self.setFixedSize(680, 350)
         self.selected_path = None
         
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Found {len(suggestions)} possible save locations from PCGamingWiki:"))
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        header = QLabel(f"Found {len(suggestions)} possible save locations from PCGamingWiki:")
+        header.setStyleSheet("font-weight: bold;")
+        layout.addWidget(header)
         
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background: #1a1a1a; border: 1px solid #333;")
+        
         container = QWidget()
         list_layout = QVBoxLayout(container)
+        list_layout.setContentsMargins(2, 2, 2, 2)
+        list_layout.setSpacing(2)
         list_layout.setAlignment(Qt.AlignTop)
+        
+        metrics = QFontMetrics(self.font())
         
         for item in suggestions:
             row = QWidget()
-            row.setStyleSheet("background: #252525; border-radius: 5px; margin: 2px;")
+            row.setFixedHeight(36)
+            row.setStyleSheet("background: #252525; border-radius: 3px;")
             rl = QHBoxLayout(row)
+            rl.setContentsMargins(4, 0, 4, 0)
+            rl.setSpacing(4)
             
-            # Badge
+            # Badge (Fixed 130px)
             badge = QLabel(item["path_type"])
             color = "#2e7d32" if item["exists"] else "#555"
-            badge.setStyleSheet(f"background: {color}; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold;")
+            badge.setFixedWidth(130)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet(f"background: {color}; color: white; border-radius: 2px; font-size: 10px; font-weight: bold; padding: 2px;")
             rl.addWidget(badge)
             
-            info = QVBoxLayout()
-            info.addWidget(QLabel(f"<b>{item['expanded_path']}</b>"))
-            rl.addLayout(info, 1)
+            # Path text (Elided, 10px)
+            path_val = item['expanded_path']
+            elided = metrics.elidedText(path_val, Qt.ElideMiddle, 380)
+            path_label = QLabel(elided)
+            path_label.setToolTip(path_val)
+            path_label.setStyleSheet("font-size: 10px; color: #ddd;")
+            rl.addWidget(path_label, 1)
             
+            # Browse button (Fixed 100px)
             browse_btn = QPushButton("📁 Browse Here")
-            browse_btn.clicked.connect(lambda checked, p=item['expanded_path']: self.browse_and_confirm(p))
+            browse_btn.setFixedWidth(100)
+            browse_btn.setStyleSheet("font-size: 10px; padding: 4px 8px; background: #444;")
+            browse_btn.clicked.connect(lambda checked, p=path_val: self.browse_and_confirm(p))
             rl.addWidget(browse_btn)
             
             list_layout.addWidget(row)
@@ -369,6 +392,7 @@ class WikiSuggestionsDialog(QDialog):
         layout.addWidget(scroll)
         
         cancel = QPushButton("Cancel")
+        cancel.setStyleSheet("padding: 6px;")
         cancel.clicked.connect(self.reject)
         layout.addWidget(cancel)
 
@@ -386,6 +410,26 @@ class WikiSuggestionsDialog(QDialog):
                 self.selected_path = directory
                 self.accept()
 
+class WikiFetchWorker(QThread):
+    results_ready = Signal(list)
+    failed = Signal()
+
+    def __init__(self, game_title, windows_games_dir):
+        super().__init__()
+        self.game_title = game_title
+        self.windows_games_dir = windows_games_dir
+
+    def run(self):
+        try:
+            from src.pcgamingwiki import fetch_save_locations
+            results = fetch_save_locations(
+                self.game_title,
+                self.windows_games_dir
+            )
+            self.results_ready.emit(results)
+        except Exception:
+            self.failed.emit()
+
 class SaveSyncSetupDialog(QDialog):
     def __init__(self, game_name, config, main_window, parent=None):
         super().__init__(parent)
@@ -394,6 +438,8 @@ class SaveSyncSetupDialog(QDialog):
         self.config = config
         self.main_window = main_window
         self.selected_path = None
+        self.wiki_worker = None
+        self.wiki_timeout = None
         
         self.setFixedSize(450, 250)
         layout = QVBoxLayout(self)
@@ -405,11 +451,11 @@ class SaveSyncSetupDialog(QDialog):
         
         layout.addStretch()
         
-        btn_wiki = QPushButton("🌐 Get PCGamingWiki Suggestions")
-        btn_wiki.setStyleSheet("padding: 10px; background: #1565c0; color: white; font-weight: bold;")
-        btn_wiki.setVisible(self.config.get("pcgamingwiki_enabled", True))
-        btn_wiki.clicked.connect(self.get_suggestions)
-        layout.addWidget(btn_wiki)
+        self.btn_wiki = QPushButton("🌐 Get PCGamingWiki Suggestions")
+        self.btn_wiki.setStyleSheet("padding: 10px; background: #1565c0; color: white; font-weight: bold;")
+        self.btn_wiki.setVisible(self.config.get("pcgamingwiki_enabled", True))
+        self.btn_wiki.clicked.connect(self.get_suggestions)
+        layout.addWidget(self.btn_wiki)
         
         btn_manual = QPushButton("📁 Browse Manually")
         btn_manual.setStyleSheet("padding: 8px;")
@@ -422,36 +468,57 @@ class SaveSyncSetupDialog(QDialog):
 
     def get_suggestions(self):
         # Show loading
-        loading = QMessageBox(self)
-        loading.setWindowTitle("Fetching Suggestions")
-        loading.setText("Querying PCGamingWiki...")
-        loading.setStandardButtons(QMessageBox.NoButton)
-        loading.show()
-        QApplication.processEvents()
+        self.loading_dlg = QMessageBox(self)
+        self.loading_dlg.setWindowTitle("Fetching Suggestions")
+        self.loading_dlg.setText("Querying PCGamingWiki...")
+        self.loading_dlg.setStandardButtons(QMessageBox.NoButton)
+        self.loading_dlg.setWindowModality(Qt.WindowModal)
+        self.loading_dlg.show()
         
-        # We'll use a local event loop to wait for the thread
-        loop = QEventLoop()
-        results = []
-        def on_finished(res):
-            nonlocal results
-            results = res
-            loop.quit()
-            
-        thread = WikiFetcherThread(self.game_name, self.config.get("windows_games_dir", ""))
-        thread.finished.connect(on_finished)
-        thread.start()
-        loop.exec()
-        loading.close()
+        self.btn_wiki.setEnabled(False)
+        
+        self.wiki_worker = WikiFetchWorker(self.game_name, self.config.get("windows_games_dir", ""))
+        self.wiki_worker.results_ready.connect(self.on_wiki_results)
+        self.wiki_worker.failed.connect(self.on_wiki_failed)
+        
+        self.wiki_timeout = QTimer()
+        self.wiki_timeout.setSingleShot(True)
+        self.wiki_timeout.timeout.connect(self.on_wiki_timeout)
+        self.wiki_timeout.start(3000)
+        
+        self.wiki_worker.start()
+
+    def on_wiki_timeout(self):
+        if self.wiki_worker and self.wiki_worker.isRunning():
+            self.wiki_worker.terminate()
+            self.on_wiki_failed()
+
+    def on_wiki_results(self, results):
+        if self.wiki_timeout: self.wiki_timeout.stop()
+        self.loading_dlg.hide()
+        self.loading_dlg.close()
+        self.btn_wiki.setEnabled(True)
         
         if not results:
             QMessageBox.information(self, "No Suggestions", "No suggestions found for this game. Please browse manually.")
             self.browse_manually()
             return
             
+        # Small delay to ensure previous dialog is fully gone from screen
+        QTimer.singleShot(100, lambda: self._show_suggestions(results))
+
+    def _show_suggestions(self, results):
         dialog = WikiSuggestionsDialog(results, self.game_name, self)
         if dialog.exec() == QDialog.Accepted:
             self.selected_path = dialog.selected_path
             self.accept()
+
+    def on_wiki_failed(self):
+        if self.wiki_timeout: self.wiki_timeout.stop()
+        self.loading_dlg.hide()
+        self.loading_dlg.close()
+        self.btn_wiki.setEnabled(True)
+        QMessageBox.warning(self, "Error", "Failed to reach PCGamingWiki. Please check your connection.")
 
     def browse_manually(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Save Folder")
@@ -465,6 +532,8 @@ class WindowsGameSettingsDialog(QDialog):
         self.game, self.config, self.main_window = game, config, main_window
         self.setWindowTitle(f"Game Settings — {game.get('name')}")
         self.resize(550, 500)
+        self.wiki_worker = None
+        self.wiki_timeout = None
         
         self.save_data = windows_saves.get_windows_save(game['id']) or {"name": game.get('name')}
         self.default_exe = self.save_data.get("default_exe")
@@ -501,10 +570,10 @@ class WindowsGameSettingsDialog(QDialog):
         layout.addWidget(self.save_status)
         
         save_btns = QHBoxLayout()
-        wiki_btn = QPushButton("🌐 PCGamingWiki Suggestions")
-        wiki_btn.setVisible(self.config.get("pcgamingwiki_enabled", True))
-        wiki_btn.clicked.connect(self.get_wiki_suggestions)
-        save_btns.addWidget(wiki_btn)
+        self.wiki_btn = QPushButton("🌐 PCGamingWiki Suggestions")
+        self.wiki_btn.setVisible(self.config.get("pcgamingwiki_enabled", True))
+        self.wiki_btn.clicked.connect(self.get_wiki_suggestions)
+        save_btns.addWidget(self.wiki_btn)
         
         manual_btn = QPushButton("📁 Browse Manually")
         manual_btn.clicked.connect(self.browse_save_dir)
@@ -574,25 +643,36 @@ class WindowsGameSettingsDialog(QDialog):
             self.update_ui()
 
     def get_wiki_suggestions(self):
-        loading = QMessageBox(self)
-        loading.setWindowTitle("Fetching Suggestions")
-        loading.setText("Querying PCGamingWiki...")
-        loading.setStandardButtons(QMessageBox.NoButton)
-        loading.show()
-        QApplication.processEvents()
+        self.loading_dlg = QMessageBox(self)
+        self.loading_dlg.setWindowTitle("Fetching Suggestions")
+        self.loading_dlg.setText("Querying PCGamingWiki...")
+        self.loading_dlg.setStandardButtons(QMessageBox.NoButton)
+        self.loading_dlg.setWindowModality(Qt.WindowModal)
+        self.loading_dlg.show()
         
-        loop = QEventLoop()
-        results = []
-        def on_finished(res):
-            nonlocal results
-            results = res
-            loop.quit()
-            
-        thread = WikiFetcherThread(self.game.get("name"), self.config.get("windows_games_dir", ""))
-        thread.finished.connect(on_finished)
-        thread.start()
-        loop.exec()
-        loading.close()
+        self.wiki_btn.setEnabled(False)
+        
+        self.wiki_worker = WikiFetchWorker(self.game.get("name"), self.config.get("windows_games_dir", ""))
+        self.wiki_worker.results_ready.connect(self.on_wiki_results)
+        self.wiki_worker.failed.connect(self.on_wiki_failed)
+        
+        self.wiki_timeout = QTimer()
+        self.wiki_timeout.setSingleShot(True)
+        self.wiki_timeout.timeout.connect(self.on_wiki_timeout)
+        self.wiki_timeout.start(3000)
+        
+        self.wiki_worker.start()
+
+    def on_wiki_timeout(self):
+        if self.wiki_worker and self.wiki_worker.isRunning():
+            self.wiki_worker.terminate()
+            self.on_wiki_failed()
+
+    def on_wiki_results(self, results):
+        if self.wiki_timeout: self.wiki_timeout.stop()
+        self.loading_dlg.hide()
+        self.loading_dlg.close()
+        self.wiki_btn.setEnabled(True)
         
         if not results:
             QMessageBox.information(self, "No Suggestions", "No suggestions found for this game.")
@@ -602,6 +682,13 @@ class WindowsGameSettingsDialog(QDialog):
         if dialog.exec() == QDialog.Accepted:
             self.save_dir = dialog.selected_path
             self.update_ui()
+
+    def on_wiki_failed(self):
+        if self.wiki_timeout: self.wiki_timeout.stop()
+        self.loading_dlg.hide()
+        self.loading_dlg.close()
+        self.wiki_btn.setEnabled(True)
+        QMessageBox.warning(self, "Error", "Failed to reach PCGamingWiki. Please check your connection.")
 
     def browse_save_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Save Folder")
@@ -1001,7 +1088,7 @@ class GameDetailDialog(QDialog):
         
         # Action Buttons Container (Minimized spacing)
         self.actions_layout = QVBoxLayout()
-        self.actions_layout.setContentsMargins(0, 5, 0, 0) # Tight to description
+        self.actions_layout.setContentsMargins(0, 0, 0, 0) # Perfectly tight to description
         self.actions_layout.setSpacing(4) # Very small margin between buttons
         
         self.play_btn = QPushButton("▶ PLAY")
@@ -1038,7 +1125,7 @@ class GameDetailDialog(QDialog):
         
         # Close button (Bottom, spans full width)
         close_btn = QPushButton("Close")
-        close_btn.setStyleSheet("background: #333; color: #ccc; padding: 8px; font-size: 12pt;")
+        close_btn.setStyleSheet("background: #333; color: #ccc; padding: 8px; font-size: 14pt;")
         close_btn.clicked.connect(self.reject)
         main_layout.addWidget(close_btn)
         
