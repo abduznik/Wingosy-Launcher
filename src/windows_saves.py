@@ -24,23 +24,31 @@ def save_windows_saves(data):
     except Exception as e:
         logging.error(f"Failed to save windows_saves.json: {e}")
 
+def get_windows_save(rom_id):
+    """Return the configured save data for a ROM ID."""
+    data = load_windows_saves()
+    return data.get(str(rom_id))
+
 def get_save_dir(rom_id):
     """Return the configured save directory for a ROM ID."""
-    data = load_windows_saves()
-    entry = data.get(str(rom_id))
+    entry = get_windows_save(rom_id)
     return entry.get("save_dir") if entry else None
 
-def set_save_dir(rom_id, name, path):
-    """Set or update the save directory for a ROM ID."""
+def set_windows_save(rom_id, name, save_dir=None, default_exe=None):
+    """Set or update the save/exe configuration for a ROM ID."""
     data = load_windows_saves()
-    data[str(rom_id)] = {
-        "name": name,
-        "save_dir": path,
-        "last_synced": None
-    }
+    rid_str = str(rom_id)
+    if rid_str not in data:
+        data[rid_str] = {"name": name}
+    
+    if save_dir is not None:
+        data[rid_str]["save_dir"] = save_dir
+    if default_exe is not None:
+        data[rid_str]["default_exe"] = default_exe
+        
     save_windows_saves(data)
 
-def remove_save_dir(rom_id):
+def remove_windows_save(rom_id):
     """Remove the save configuration for a ROM ID."""
     data = load_windows_saves()
     if str(rom_id) in data:
