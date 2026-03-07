@@ -67,9 +67,9 @@ class EmulatorEditDialog(QDialog):
         self.save_path_input = QLineEdit()
         if emu_data: self.save_path_input.setText(save_res.get("path", "") or save_res.get("srm_dir", ""))
         save_path_layout.addWidget(self.save_path_input)
-        browse_save_btn = QPushButton("Browse")
-        browse_save_btn.clicked.connect(self.browse_dir)
-        save_path_layout.addWidget(browse_save_btn)
+        self.browse_save_btn = QPushButton("Browse")
+        self.browse_save_btn.clicked.connect(self.browse_dir)
+        save_path_layout.addWidget(self.browse_save_btn)
         self.save_path_label = QLabel("Save Directory:")
         form.addRow(self.save_path_label, save_path_layout)
         
@@ -103,7 +103,7 @@ class EmulatorEditDialog(QDialog):
         is_direct = (mode == "direct_file")
         
         self.save_path_input.setEnabled(not is_none)
-        self.save_path_input.parent().findChild(QPushButton).setEnabled(not is_none)
+        self.browse_save_btn.setEnabled(not is_none)
         
         self.ext_input.setVisible(is_direct)
         self.ext_label.setVisible(is_direct)
