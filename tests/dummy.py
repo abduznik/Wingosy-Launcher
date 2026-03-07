@@ -115,14 +115,14 @@ FAKE_GAME_NAMES = [
     "Fury Road", "Ghost Recon Fake", "Hyper Drive",
 ]
 
-def _random_id():
-    return random.randint(1000, 999999)
+_next_id = 1000
 
 def _random_string(length=8):
     return ''.join(random.choices(string.ascii_lowercase, k=length))
 
 def generate_fake_games(count=5000):
     """Generate count fake game entries covering all platform slugs."""
+    global _next_id
     games = []
     slugs = ALL_PLATFORM_SLUGS
     
@@ -135,7 +135,7 @@ def generate_fake_games(count=5000):
         fs_name = f"{name}{ext}".replace(" ", "_").replace(":", "")
         
         games.append({
-            "id": _random_id() + i,
+            "id": _next_id,
             "name": name,
             "fs_name": fs_name,
             "platform_slug": slug,
@@ -146,6 +146,7 @@ def generate_fake_games(count=5000):
             "files": [{"file_name": fs_name}],
             "updated_at": "2025-01-01T00:00:00",
         })
+        _next_id += 1
     
     return games
 
@@ -215,14 +216,30 @@ class DummyRomMClient:
     def get_latest_save(self, rom_id):
         return None  # no cloud saves in dummy mode
 
+    def get_latest_state(self, rom_id):
+        return None
+
     def get_save_by_slot(self, rom_id, slot):
         return None
 
-    def download_save(self, save_item, target_path, thread=None):
-        return False
+    def get_state_by_slot(self, rom_id, slot):
+        return None
 
-    def upload_save(self, rom_id, emulator, file_path):
-        print(f"[DummyClient] Fake save upload for rom_id={rom_id}")
+    def download_save(self, save_item, target_path, thread=None):
+        return True
+
+    def download_state(self, state_obj, dest_path):
+        return True
+
+    def upload_save(self, rom_id, emulator, file_path, 
+
+                    slot="wingosy-windows", raw=False):
+        print(f"[DummyClient] Fake save upload for rom_id={rom_id} (raw={raw})")
+        return True, "dummy upload ok"
+
+    def upload_state(self, rom_id, emulator, file_path,
+                     slot="wingosy-state"):
+        print(f"[DummyClient] Fake state upload for rom_id={rom_id}")
         return True, "dummy upload ok"
 
     def get_firmware(self):

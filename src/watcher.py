@@ -63,44 +63,30 @@ class WingosyWatcher(QThread):
             
             time.sleep(2)
 
-    def _hash_retroarch_game(self, save_path, is_folder=False):
+    def _hash_retroarch_game(self, srm_path, state_path=None, is_folder=False):
         """
-        Hash the SRM + all state files for a RetroArch game.
+        Hash the SRM + state file independently for change detection.
         For folder-based cores (PSP), hashes the entire folder tree.
         """
         if is_folder:
             from src.utils import calculate_folder_hash
             try:
-                return calculate_folder_hash(str(save_path))
+                return calculate_folder_hash(str(srm_path))
             except Exception:
                 return None
-
-        srm = Path(save_path)
-        core_dir = srm.parent
-        stem = srm.stem  # e.g. "Super Punch-Out!! (USA)"
         
-        # Collect: the .srm + any .stateN / .state.auto files
-        files = []
-        if srm.exists():
-            files.append(srm)
-        for f in sorted(core_dir.glob(f"{stem}.state*")):
-            files.append(f)
-        
-        if not files:
-            return None
-        
-        # Hash all files together
-        h = hashlib.sha256()
-        for f in files:
-            try:
-                h.update(f.read_bytes())
-            except Exception:
-                pass
-        return h.hexdigest()
+        h = hashlib.md5()
+        found = False
+        for p in [srm_path, state_path]:
+            if p and Path(p).exists():
+                found = True
+                with open(p, 'rb') as f:
+                    h.update(f.read())
+        return h.hexdigest() if found else None
 
     def _get_folder_mtime(self, path):
         """Return the newest mtime of any file in a folder tree."""
-        if not os.path.exists(path):
+        if not path or not os.path.exists(path):
             return 0
         if os.path.isfile(path):
             return os.path.getmtime(path)
@@ -115,7 +101,21 @@ class WingosyWatcher(QThread):
                     pass
         return newest
 
-    def track_session(self, proc, emu_display_name, game_data, local_rom_path, emu_path):
+    def _safe_folder_hash(self, folder_path, retries=3, delay=3):
+        from src.utils import calculate_folder_hash
+        for i in range(retries):
+            try:
+                if not os.path.exists(folder_path):
+                    return None
+                return calculate_folder_hash(str(folder_path))
+            except (PermissionError, OSError) as e:
+                if i < retries - 1:
+                    time.sleep(delay)
+                else:
+                    print(f"[Watcher] Could not hash folder after {retries} attempts: {e}")
+                    return None
+
+    def track_session(self, proc, emu_display_name, game_data, local_rom_path, emu_path, skip_pull=False):
         """
         Explicitly track a process launched by the UI.
         """
@@ -134,7 +134,7 @@ class WingosyWatcher(QThread):
                 save_path = str(Path(save_path).resolve())
                 
                 # Double-Pull Protection
-                should_pull = self.config.get("auto_pull_saves", True)
+                should_pull = (self.config.get("auto_pull_saves", True) and not skip_pull)
                 if self.skip_next_pull_rom_id == str(rom_id):
                     should_pull = False
                     self.skip_next_pull_rom_id = None
@@ -147,11 +147,27 @@ class WingosyWatcher(QThread):
                     is_folder = False # We upload a zip of files later
 
                 # Tracking both mode for RetroArch
-                is_retroarch_pull = (emu_display_name == "Multi-Console (RetroArch)")
-                self._pull_is_retroarch = is_retroarch_pull
+                is_retroarch_game = ("RetroArch" in emu_display_name or platform == "multi" or platform in RETROARCH_PLATFORMS)
+                self._pull_is_retroarch = is_retroarch_game
 
-                if should_pull:
-                    self.pull_server_save(rom_id, title, save_path, is_folder)
+                if emu_display_name == "Multi-Console (RetroArch)":
+                    ra_emu_data = {"path": emu_path}
+                    save_info = self.get_retroarch_save_path(
+                        game_data, ra_emu_data)
+                    if save_info is None:
+                        self.log_signal.emit(
+                            f"⚠️ Could not resolve RetroArch paths for {title}")
+                        return
+                    save_path   = save_info.get('srm') or ""
+                    state_path  = save_info.get('state') or ""
+                    is_folder   = False
+                    if should_pull:
+                        self.pull_server_save(
+                            rom_id, title, save_info, is_folder, force=False)
+                else:
+                    if should_pull:
+                        self.pull_server_save(
+                            rom_id, title, save_path, is_folder, force=False)
                 
                 self._pull_is_retroarch = False
 
@@ -161,29 +177,39 @@ class WingosyWatcher(QThread):
                 
                 both_mode = False
                 state_save_path = None
+                psp_folder = None
                 
-                if is_retroarch_pull:
+                if is_retroarch_game:
                     ra_res = self.get_retroarch_save_path(game_item, {"path": emu_path})
-                    if len(ra_res) == 3:
-                        srm_p, state_p, is_f = ra_res
-                        save_path = str(Path(srm_p).resolve())
-                        state_save_path = str(Path(state_p).resolve())
-                        both_mode = True
+                    if isinstance(ra_res, dict):
+                        save_path = str(Path(ra_res['srm']).resolve())
+                        state_save_path = str(Path(ra_res['state']).resolve()) if ra_res.get('state') else None
+                        both_mode = (self.config.get("retroarch_save_mode") == "both")
+                        is_folder = ra_res.get('is_folder', False)
+                        psp_folder = ra_res.get('psp_folder')
                 
                 # Track the session with initial state
                 if is_gc_card:
                     h = None
                     init_mtime = time.time() # Key timestamp for GCI detection
-                elif is_retroarch_pull:
-                    h = self._hash_retroarch_game(save_path, is_folder)
-                    init_mtime = self._get_folder_mtime(save_path)
+                elif psp_folder:
+                    # For PSP, defer hashing to avoid permission/non-existence issues at start
+                    h = self._safe_folder_hash(psp_folder) if os.path.exists(psp_folder) else None
+                    init_mtime = self._get_folder_mtime(psp_folder) if os.path.exists(psp_folder) else time.time()
+                    initial_state_mtime = os.path.getmtime(state_path) if state_path and os.path.exists(state_path) else 0
+                elif is_retroarch_game:
+                    h = self._hash_retroarch_game(save_path, state_save_path, is_folder)
+                    init_mtime = max(self._get_folder_mtime(save_path), self._get_folder_mtime(state_save_path))
                 else:
                     h = (calculate_folder_hash(save_path) if is_folder 
                           else calculate_file_hash(save_path) 
                           if os.path.exists(save_path) else None)
                     init_mtime = self._get_folder_mtime(save_path)
 
-                self.active_sessions[pid] = {
+                srm_p = save_path if str(save_path).endswith('.srm') else (state_save_path if state_save_path and str(state_save_path).endswith('.srm') else None)
+                state_p = state_save_path if state_save_path and '.state' in str(state_save_path) else (save_path if '.state' in str(save_path) else None)
+
+                session_data = {
                     'emu': emu_display_name, 
                     'rom_id': rom_id, 
                     'save_path': save_path,
@@ -195,8 +221,12 @@ class WingosyWatcher(QThread):
                     'emu_path': emu_path,
                     'gc_card_dir': gc_card_dir,
                     'both_mode': both_mode,
-                    'state_save_path': state_save_path
+                    'state_save_path': state_save_path,
+                    'srm_path': srm_p,
+                    'state_path': state_p,
+                    'psp_folder': psp_folder
                 }
+                self.active_sessions[pid] = session_data
                 self.log_signal.emit(f"🎮 Tracking {title} on {emu_display_name} (PID: {pid})")
             else:
                 self.log_signal.emit(f"⚠️ Identified {title} but could not resolve local save path.")
@@ -204,124 +234,158 @@ class WingosyWatcher(QThread):
         except Exception as e:
             self.log_signal.emit(f"❌ Error setting up tracking: {e}")
 
-    def pull_server_save(self, rom_id, title, local_path, is_folder, force=False):
-        self.log_signal.emit(f"☁️ Checking cloud for {title}...")
+    def _clean_romm_filename(self, filename: str) -> str:
+        """
+        Strip RomM's auto-appended timestamp bracket from filename.
+        e.g. "Super Punch-Out!! (USA) [2026-03-07 08-45-26-649].state"
+             -> "Super Punch-Out!! (USA).state"
+        """
+        import re
+        # Correct regex: Match " [date-like content]" before extension
+        cleaned = re.sub(r'\s*\[\d{4}-\d{2}-\d{2}[^\]]+\]', '', filename)
+        return cleaned
+
+    def pull_server_save(self, rom_id, title, save_info_or_path,
+                         is_folder, force=False):
         
-        save_mode = self.config.get("retroarch_save_mode", "srm")
-        is_retroarch_pull = getattr(self, '_pull_is_retroarch', False)
-        
-        if is_retroarch_pull and save_mode in ("srm", "state", "both"):
-            slot = "wingosy-state" if save_mode == "state" else "wingosy-srm"
-            latest_save = self.client.get_save_by_slot(rom_id, slot)
-            if latest_save is None:
-                latest_save = self.client.get_latest_save(rom_id)
+        is_ra_dict = isinstance(save_info_or_path, dict)
+        if is_ra_dict:
+            srm_path   = save_info_or_path.get('srm')
+            state_path = save_info_or_path.get('state')
         else:
-            latest_save = self.client.get_latest_save(rom_id)
+            srm_path   = save_info_or_path
+            state_path = None
 
-        if not latest_save: 
-            self.log_signal.emit("☁️ No cloud saves found.")
-            return
+        self.log_signal.emit(f"☁️ Checking cloud for {title}...")
 
-        server_updated_at = latest_save.get('updated_at', '')
+        # Pull SRM / regular save
+        latest_save = self.client.get_latest_save(rom_id)
+        if latest_save:
+            self._apply_cloud_file(
+                rom_id, title, latest_save, srm_path,
+                is_folder, force, file_type="save"
+            )
+
+        # Pull State (RetroArch only)
+        if state_path:
+            latest_state = self.client.get_latest_state(rom_id)
+            if latest_state:
+                self._apply_cloud_file(
+                    rom_id, title, latest_state, state_path,
+                    False, force, file_type="state"
+                )
+
+    def _apply_cloud_file(self, rom_id, title, cloud_obj, local_path, is_folder, force, file_type="save"):
+        server_updated_at = cloud_obj.get('updated_at', '')
         
-        # Determine cached updated_at
-        rid_str = str(rom_id)
-        cached_val = self.sync_cache.get(rid_str)
-        cached_updated_at = cached_val.get('updated_at', '') if isinstance(cached_val, dict) else cached_val
-        
+        # Determine cached updated_at using new dictionary-based rom_id keys
+        cached_val = self.sync_cache.get(str(rom_id), {})
+        if isinstance(cached_val, dict):
+            cached_updated_at = cached_val.get(f'{file_type}_updated_at', '')
+        else:
+            # Fallback for old cache format
+            cached_updated_at = cached_val if file_type == 'save' else ''
+
+        local_exists = os.path.exists(local_path)
+
         # Only skip if timestamp matches AND the local file actually exists
-        if not force and cached_updated_at == server_updated_at and os.path.exists(local_path):
-            self.log_signal.emit("☁️ Cloud save already up to date.")
+        if not force and cached_updated_at == server_updated_at and local_exists:
+            self.log_signal.emit(f"☁️ {'SAVE' if file_type=='save' else 'STATE'} already up to date.")
             return
 
-        temp_dl = str(self.tmp_dir / f"cloud_check_{rom_id}")
-        if self.client.download_save(latest_save, temp_dl):
-            is_zip = zipfile.is_zipfile(temp_dl)
-                
-            if not force and os.path.exists(local_path) and rid_str in self.sync_cache:
-                # Save Conflict Detected
-                self.log_signal.emit(f"⚠️ Save conflict detected for {title}!")
-                self.conflict_signal.emit(title, local_path, temp_dl, rid_str)
-                return # Stop here, wait for UI resolution
+        temp_dl = str(self.tmp_dir / f"cloud_check_{rom_id}_{file_type}")
+        
+        success = False
+        if file_type == "state":
+            success = self.client.download_state(cloud_obj, temp_dl)
+        else:
+            success = self.client.download_save(cloud_obj, temp_dl)
 
-            self.log_signal.emit(f"📥 Cloud save is different. Updating...")
+        if success:
+            orig_filename = cloud_obj.get('file_name', '') or cloud_obj.get('name', '')
+            filename = self._clean_romm_filename(orig_filename)
             
-            # Ensure parent dir exists
+            print(f"[Pull] {file_type} filename before clean={orig_filename}")
+            print(f"[Pull] {file_type} filename after clean={filename}")
+            
+            is_raw_retroarch = filename.lower().endswith(('.srm', '.state'))
+            is_zip = zipfile.is_zipfile(temp_dl) if not is_raw_retroarch else False
+                
+            # Note: Combined key conflict check removed; blocking pull in UI now handles it
+            
+            self.log_signal.emit(f"📥 Cloud {file_type} is different. Updating...")
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
             # Backup
             if os.path.exists(local_path):
                 bak_path = str(local_path) + ".bak"
-                if os.path.exists(bak_path):
-                    if os.path.isdir(bak_path):
-                        shutil.rmtree(bak_path, ignore_errors=True)
-                    else:
-                        try: os.remove(bak_path)
-                        except Exception: pass
-                
                 try:
-                    if is_folder:
-                        shutil.copytree(local_path, bak_path)
-                    else:
-                        shutil.copy2(local_path, bak_path)
-                except Exception as e:
-                    self.log_signal.emit(f"⚠️ Backup failed: {e}")
+                    if is_folder: shutil.copytree(local_path, bak_path)
+                    else: shutil.copy2(local_path, bak_path)
+                except Exception: pass
 
-            # Apply
             try:
                 if is_zip:
                     if is_folder:
                         extract_parent = str(Path(local_path).parent)
                         folder_name = Path(local_path).name
-                        if os.path.exists(local_path):
-                            shutil.rmtree(local_path, ignore_errors=True)
+                        if os.path.exists(local_path): shutil.rmtree(local_path, ignore_errors=True)
                         os.makedirs(extract_parent, exist_ok=True)
                         with zipfile.ZipFile(temp_dl, 'r') as z:
                             names = z.namelist()
-                            has_root = any(n.startswith(folder_name + '/') or 
-                                          n.startswith(folder_name + '\\') for n in names)
-                            if has_root:
-                                z.extractall(extract_parent)
-                            else:
-                                os.makedirs(local_path, exist_ok=True)
-                                z.extractall(local_path)
+                            has_root = any(n.startswith(folder_name + '/') or n.startswith(folder_name + '\\') for n in names)
+                            if has_root: z.extractall(extract_parent)
+                            else: os.makedirs(local_path, exist_ok=True); z.extractall(local_path)
                     else:
-                        # Special Case: GC bundle (zipped GCIs going into Card A directory)
                         with zipfile.ZipFile(temp_dl, 'r') as z:
                             names = z.namelist()
                             is_gc_bundle = any(n.endswith('.gci') for n in names)
-                            
-                            if is_gc_bundle and os.path.isdir(local_path):
-                                self.log_signal.emit(f"📥 Extracting GC bundle into {Path(local_path).name}...")
-                                z.extractall(local_path)
+                            if is_gc_bundle and os.path.isdir(local_path): z.extractall(local_path)
                             else:
-                                # Standard single-file extract
-                                target_member = None
-                                for name in names:
-                                    if name.endswith(('.ps2', '.srm', '.sav', '.dat', '.sv', '.raw', '.gci')):
-                                        target_member = name
-                                        break
-                                
+                                target_member = next((n for n in names if n.endswith(('.ps2', '.srm', '.sav', '.dat', '.sv', '.raw', '.gci', '.state'))), names[0] if names else None)
                                 if target_member:
-                                    with z.open(target_member) as source, open(local_path, 'wb') as target:
-                                        shutil.copyfileobj(source, target)
-                                elif names:
-                                    with z.open(names[0]) as source, open(local_path, 'wb') as target:
-                                        shutil.copyfileobj(source, target)
+                                    with z.open(target_member) as source, open(local_path, 'wb') as target: shutil.copyfileobj(source, target)
+                elif is_raw_retroarch:
+                    dest = Path(local_path)
+                    if dest.is_dir(): dest = dest / filename
+                    shutil.copy2(temp_dl, str(dest))
+                    
+                    final_path = dest
+                    if (dest.suffix == '.state' and not dest.name.endswith('.state.auto')):
+                        auto_path = dest.with_name(dest.name + '.auto')
+                        try:
+                            if auto_path.exists():
+                                if auto_path.is_dir(): shutil.rmtree(auto_path)
+                                else: os.remove(auto_path)
+                            dest.rename(auto_path)
+                            print(f"[Pull] Renamed state -> {auto_path.name}")
+                            final_path = auto_path
+                        except Exception as e: print(f"[Pull] Failed to rename state: {e}")
+                    
+                    if file_type == "state":
+                        # Add delay for RetroArch
+                        import time
+                        time.sleep(0.5)
+                        print(f"[Pull] State file ready at: {final_path}")
                 else:
-                    if os.path.isdir(local_path):
-                        shutil.rmtree(local_path, ignore_errors=True)
-                    shutil.copy2(temp_dl, local_path)
+                    dest = Path(local_path)
+                    if dest.is_dir():
+                        dest = dest / filename
+                        shutil.copy2(temp_dl, str(dest))
+                    else:
+                        if os.path.isdir(local_path): shutil.rmtree(local_path, ignore_errors=True)
+                        shutil.copy2(temp_dl, local_path)
                 
-                self.sync_cache[rid_str] = server_updated_at
+                # Update cache using new dictionary structure
+                current_entry = self.sync_cache.get(str(rom_id))
+                if not isinstance(current_entry, dict):
+                    current_entry = {}
+                current_entry[f'{file_type}_updated_at'] = server_updated_at
+                self.sync_cache[str(rom_id)] = current_entry
                 self.save_cache()
-                self.log_signal.emit("✨ Cloud save applied!")
-                self.notify_signal.emit(title, "☁️ Cloud save applied")
-            except Exception as e:
-                self.log_signal.emit(f"❌ Failed to apply save: {e}")
-            
-            if os.path.exists(temp_dl):
-                os.remove(temp_dl)
+                self.log_signal.emit(f"✨ Cloud {file_type} applied!")
+            except Exception as e: self.log_signal.emit(f"❌ Failed to apply {file_type}: {e}")
+            if os.path.exists(temp_dl): os.remove(temp_dl)
 
     def resolve_save_path(self, emu_display_name, title, full_cmd, emu_path, platform=None, proc=None):
         try:
@@ -510,41 +574,50 @@ class WingosyWatcher(QThread):
                 if not game_item: game_item = {"id": title, "name": title, "platform_slug": platform, "fs_name": title + ".rom"}
                 
                 res = self.get_retroarch_save_path(game_item, {"path": emu_path})
-                if len(res) == 3:
-                    path, state_p, is_f = res
-                else:
-                    path, is_f = res
+                if res['is_folder']:
+                    return res['srm'], True
                 
-                if path: return str(path), is_f
+                save_mode = self.config.get("retroarch_save_mode", "srm")
+                path = res['state'] if save_mode == "state" else res['srm']
+                return path, False
         except Exception as e:
             self.log_signal.emit(f"⚠️ Error resolving save path: {e}")
         return None
 
     def get_retroarch_save_path(self, game, emu_data):
         """
-        Returns (path_str, is_folder) for the RetroArch save to sync.
-        Respects the retroarch_save_mode config setting:
-          srm   → .srm file in saves/<CoreFolder>/
-          state → .state.auto file in states/<CoreFolder>/
-          both  → returns the path that was modified most recently
-        PSP is always SAVEDATA folder regardless of mode.
+        Returns a dict containing paths for the RetroArch save to sync.
+        {
+            "srm": str,
+            "state": str,
+            "is_folder": bool,
+            "psp_folder": str or None
+        }
         """
         from src.platforms import RETROARCH_CORES, RETROARCH_CORE_SAVE_FOLDERS
         ra_exe = emu_data.get("path", "")
         if not ra_exe:
-            return None, False
+            return None
 
         ra_dir = Path(ra_exe).parent
         platform_slug = game.get("platform_slug", "")
 
-        # PSP: always folder-based SAVEDATA, never affected by save mode
+        # PSP: always folder-based SAVEDATA
         if platform_slug in ("psp", "playstation-portable"):
             psp_saves = ra_dir / "saves" / "PPSSPP" / "PSP" / "SAVEDATA"
-            return str(psp_saves), True
+            rom_name = game.get("fs_name", game.get("name", ""))
+            base_name = Path(rom_name).stem
+            state_path = ra_dir / "states" / "PPSSPP" / f"{base_name}.state.auto"
+            return {
+                "srm": str(psp_saves),
+                "state": str(state_path),
+                "is_folder": True,
+                "psp_folder": str(psp_saves)
+            }
 
         core_dll = RETROARCH_CORES.get(platform_slug, "")
         if not core_dll:
-            return None, False
+            return None
 
         core_name = (core_dll.replace(".dll", "").replace(".so", "")
                               .replace("_libretro", ""))
@@ -556,32 +629,17 @@ class WingosyWatcher(QThread):
         srm_path = ra_dir / "saves" / save_folder_name / f"{base_name}.srm"
         state_path = ra_dir / "states" / save_folder_name / f"{base_name}.state.auto"
 
-        save_mode = self.config.get("retroarch_save_mode", "srm")
-
-        if save_mode == "srm":
-            return str(srm_path), False
-        elif save_mode == "state":
-            return str(state_path), False
-        elif save_mode == "both":
-            # Return 3-tuple: (srm_path, state_path, is_folder=False)
-            return str(srm_path), str(state_path), False
-
-        return str(srm_path), False
+        return {
+            "srm": str(srm_path),
+            "state": str(state_path),
+            "is_folder": False,
+            "psp_folder": None
+        }
 
     def handle_exit(self, data):
         try:
             self.log_signal.emit(f"🛑 Session Ended: {data['title']}")
             
-            # If mode is "both", also push the secondary save file
-            save_mode = self.config.get("retroarch_save_mode", "srm")
-            emu_display_name = data.get('emu')
-            if save_mode == "both" and emu_display_name and "RetroArch" in emu_display_name:
-                # The primary was already pushed above; now push the secondary if it exists
-                # secondary = the one NOT chosen as primary in get_retroarch_save_path
-                # We just log — RomM only stores one save slot per game, so we push
-                # whichever was newer (already done). No double-push needed.
-                pass  # Already handled by get_retroarch_save_path choosing the newer file
-
             # Special case for Dolphin GC card sync (mtime-based GCI detection)
             gc_card_dir = data.get('gc_card_dir')
             if gc_card_dir:
@@ -611,9 +669,9 @@ class WingosyWatcher(QThread):
                         success, msg = self.client.upload_save(data['rom_id'], data['emu'], temp_zip)
                         if success:
                             self.log_signal.emit("✨ Sync Complete!")
-                            if str(data['rom_id']) in self.sync_cache:
-                                del self.sync_cache[str(data['rom_id'])]
-                                self.save_cache()
+                            # Clear cache entry to force re-pull on next launch
+                            self.sync_cache.pop(str(data['rom_id']), None)
+                            self.save_cache()
                         else:
                             self.log_signal.emit(f"❌ Sync Failed: {msg}")
                     finally:
@@ -630,13 +688,16 @@ class WingosyWatcher(QThread):
             is_retroarch = data.get('emu') == "Multi-Console (RetroArch)"
             both_mode = data.get('both_mode', False)
             state_save_path = data.get('state_save_path')
+            psp_folder = data.get('psp_folder')
             
             if not save_path.exists() and not is_retroarch:
                 self.log_signal.emit(f"⚠️ Save file missing on exit: {save_path}. Skipping sync.")
                 return
             
             # Capture hash IMMEDIATELY at process exit
-            if is_retroarch:
+            if is_retroarch and data.get('is_folder'):
+                h_at_exit = self._safe_folder_hash(data['save_path'])
+            elif is_retroarch:
                 h_at_exit = self._hash_retroarch_game(str(save_path), data['is_folder'])
             else:
                 h_at_exit = calculate_folder_hash(str(save_path)) if data['is_folder'] else calculate_file_hash(str(save_path))
@@ -644,7 +705,9 @@ class WingosyWatcher(QThread):
             # Give emulator a moment to finish writing buffered files to disk
             time.sleep(3)
             
-            if is_retroarch:
+            if is_retroarch and data.get('is_folder'):
+                new_h = self._safe_folder_hash(data['save_path'])
+            elif is_retroarch:
                 new_h = self._hash_retroarch_game(str(save_path), data['is_folder'])
             else:
                 new_h = calculate_folder_hash(str(save_path)) if data['is_folder'] else calculate_file_hash(str(save_path))
@@ -657,76 +720,103 @@ class WingosyWatcher(QThread):
             
             # Change detected if final hash differs from initial (during play) 
             # OR final hash differs from at_exit (post-exit flush)
+            # OR if we had no initial hash (lazy creation) and now have data
             has_hash_changed = (new_h != initial_h or (h_at_exit is not None and new_h != h_at_exit))
+            if initial_h is None and new_h is not None:
+                has_hash_changed = True
 
-            print(f"[DEBUG] {data['title']} exit: is_folder={data['is_folder']} save_path={save_path} exists={os.path.exists(save_path)} mtime_changed={mtime_changed} hash_changed={has_hash_changed}")
+            psp_folder = data.get('psp_folder')
+            state_p = data.get('state_path')
+            
+            # For PSP: also check if state file changed
+            state_mtime_changed = False
+            if psp_folder and state_p and os.path.exists(state_p):
+                current_state_mtime = os.path.getmtime(state_p)
+                state_mtime_changed = (
+                    current_state_mtime > data.get('initial_state_mtime', 0))
 
-            if not has_hash_changed and not mtime_changed:
+            if not has_hash_changed and not mtime_changed and not state_mtime_changed:
                 self.log_signal.emit(f"⏭️ No changes in {data['title']}. Skipping sync.")
                 return
+            
+            # If ONLY state changed (SAVEDATA unchanged), skip SAVEDATA upload
+            savedata_changed = mtime_changed or has_hash_changed
 
             self.log_signal.emit(f"📝 Changes detected! Syncing...")
             
-            if both_mode and is_retroarch and state_save_path:
-                # === BOTH MODE: upload SRM and STATE as separate slots ===
+            if is_retroarch and psp_folder:
+                # === PSP Folder Mode: Upload SAVEDATA zip + State file ===
                 rom_id = data['rom_id']
                 emu = data['emu']
-                srm_p = Path(data['save_path'])
-                state_p = Path(state_save_path)
-
-                # Upload SRM slot
-                if srm_p.exists():
-                    temp_srm = str(self.tmp_dir / f"sync_{rom_id}_srm.zip")
+                
+                # 1. Upload SAVEDATA Zip
+                if savedata_changed:
+                    temp_zip = str(self.tmp_dir / f"sync_{rom_id}.zip")
                     try:
-                        with zipfile.ZipFile(temp_srm, 'w', zipfile.ZIP_DEFLATED) as zf:
-                            zf.write(srm_p, srm_p.name)
-                        ok, msg = self.client.upload_save(rom_id, emu, temp_srm, slot="wingosy-srm")
-                        if ok:
-                            self.log_signal.emit("✨ SRM slot synced!")
-                            self.sync_cache.pop(f"{rom_id}:srm", None)
-                        else: self.log_signal.emit(f"❌ SRM sync failed: {msg}")
+                        zip_path(str(psp_folder), temp_zip)
+                        success, msg = self.client.upload_save(rom_id, emu, temp_zip, slot="wingosy-srm")
+                        if success:
+                            self.log_signal.emit("✨ SAVEDATA synced!")
+                            entry = self.sync_cache.get(str(rom_id))
+                            if isinstance(entry, dict): entry.pop('save_updated_at', None)
+                        else: self.log_signal.emit(f"❌ SAVEDATA sync failed: {msg}")
                     finally:
-                        if os.path.exists(temp_srm):
-                            try: os.remove(temp_srm)
-                            except: pass
+                        if os.path.exists(temp_zip): os.remove(temp_zip)
 
-                # Upload State slot
-                if state_p.exists():
-                    temp_state = str(self.tmp_dir / f"sync_{rom_id}_state.zip")
-                    try:
-                        with zipfile.ZipFile(temp_state, 'w', zipfile.ZIP_DEFLATED) as zf:
-                            zf.write(state_p, state_p.name)
-                            # Also include any numbered states alongside .auto
-                            for f in state_p.parent.glob(f"{state_p.stem.replace('.auto','')}*"):
-                                if f != state_p: zf.write(f, f.name)
-                        ok, msg = self.client.upload_save(rom_id, emu, temp_state, slot="wingosy-state")
-                        if ok:
-                            self.log_signal.emit("✨ State slot synced!")
-                            self.sync_cache.pop(f"{rom_id}:state", None)
-                        else: self.log_signal.emit(f"❌ State sync failed: {msg}")
-                    finally:
-                        if os.path.exists(temp_state):
-                            try: os.remove(temp_state)
-                            except: pass
+                # 2. Upload State File if it changed
+                if state_p and os.path.exists(state_p) and state_mtime_changed:
+                    ok, msg = self.client.upload_state(rom_id, emu, str(state_p), slot="wingosy-state")
+                    if ok:
+                        self.log_signal.emit("✨ State synced!")
+                        entry = self.sync_cache.get(str(rom_id))
+                        if isinstance(entry, dict): entry.pop('state_updated_at', None)
+                    else: self.log_signal.emit(f"❌ State sync failed: {msg}")
+                
+                self.save_cache()
+
+            elif is_retroarch and not data['is_folder']:
+                # === RetroArch Raw Mode: Upload files directly ===
+                rom_id = data['rom_id']
+                emu = data['emu']
+                srm_p = data.get('srm_path')
+                state_p = data.get('state_path')
+
+                # Upload SRM
+                if srm_p and Path(srm_p).exists():
+                    ok, msg = self.client.upload_save(rom_id, emu, str(srm_p), slot="wingosy-srm", raw=True)
+                    if ok: 
+                        self.log_signal.emit("✨ SRM synced!")
+                        # Remove specific field from new cache format
+                        entry = self.sync_cache.get(str(rom_id))
+                        if isinstance(entry, dict):
+                            entry.pop('save_updated_at', None)
+                        else:
+                            self.sync_cache.pop(f"{rom_id}:save", None) # Legacy
+                    else: self.log_signal.emit(f"❌ SRM sync failed: {msg}")
+
+                # Upload State
+                if state_p and Path(state_p).exists():
+                    ok, msg = self.client.upload_state(rom_id, emu, str(state_p), slot="wingosy-state")
+                    if ok: 
+                        self.log_signal.emit("✨ State synced!")
+                        # Remove specific field from new cache format
+                        entry = self.sync_cache.get(str(rom_id))
+                        if isinstance(entry, dict):
+                            entry.pop('state_updated_at', None)
+                        else:
+                            self.sync_cache.pop(f"{rom_id}:state", None) # Legacy
+                    else: self.log_signal.emit(f"❌ State sync failed: {msg}")
+                
+                self.save_cache()
             else:
-                # === SINGLE MODE (srm or state): original single-slot upload ===
+                # === Standard Zip Mode (Non-RetroArch or PSP) ===
                 save_mode = self.config.get("retroarch_save_mode", "srm")
                 slot = "wingosy-state" if (is_retroarch and save_mode == "state") else "wingosy-srm" if is_retroarch else "wingosy-windows"
 
                 temp_zip = str(self.tmp_dir / f"sync_{data['rom_id']}.zip")
                 try:
-                    # For RetroArch, we need to zip ALL matching files (SRM + States) or the whole folder
-                    if is_retroarch:
-                        if data['is_folder']:
-                            zip_path(str(save_path), temp_zip)
-                        else:
-                            save_p = Path(data['save_path'])
-                            with zipfile.ZipFile(temp_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
-                                if save_p.exists(): zf.write(save_p, save_p.name)
-                                for f in save_p.parent.glob(f"{save_p.stem}.state*"):
-                                    zf.write(f, f.name)
-                    else:
-                        zip_path(str(save_path), temp_zip)
+                    # For RetroArch (PSP case), we need to zip the whole folder
+                    zip_path(str(save_path), temp_zip)
                     
                     success, msg = self.client.upload_save(data['rom_id'], data['emu'], temp_zip, slot=slot)
                     if success:

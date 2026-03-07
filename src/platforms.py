@@ -170,6 +170,8 @@ RETROARCH_CORE_SAVE_FOLDERS = {
     "pcsx_rearmed":     "PCSX-ReARMed",
     # PSP — special: folder sync not single SRM
     "ppsspp":           "PPSSPP",
+    # Saturn
+    "yabasanshiro":     "YabaSanshiro",
     # Atari
     "stella":           "Stella",
     "stella2014":       "Stella 2014",
@@ -190,6 +192,8 @@ RETROARCH_CORE_SAVE_FOLDERS = {
     "mame2003_plus":    "MAME 2003-Plus",
     "fbalpha2012":      "FB Alpha 2012",
     # Misc
+    "opera":            "Opera",
+    "fmsx":             "fMSX",
     "mednafen_wswan":   "Mednafen WonderSwan",
     "smsplus":          "SMS Plus GX",
     "bluemsx":          "blueMSX",

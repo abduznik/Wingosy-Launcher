@@ -205,63 +205,46 @@ class RomMClient:
 
     def get_latest_save(self, rom_id):
         try:
-            # Trying both /api/roms/{id}/saves and /api/saves
-            url = f"{self.host}/api/roms/{rom_id}/saves"
-            try:
-                r = requests.get(url, headers=self.get_auth_headers(), timeout=10)
-                
-                if r.status_code != 200:
-                    url = f"{self.host}/api/saves"
-                    r = requests.get(url, headers=self.get_auth_headers(), params={"rom_id": rom_id}, timeout=10)
-            except (requests.exceptions.ConnectTimeout,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.RequestException) as e:
-                print(f"[API] Network error in get_latest_save: {e}")
+            r = requests.get(
+                f"{self.host}/api/saves",
+                params={"rom_id": rom_id},
+                headers=self.get_auth_headers(),
+                timeout=10
+            )
+            if r.status_code != 200:
                 return None
-
-            if r.status_code == 200:
-                data = r.json()
-                items = data if isinstance(data, list) else data.get("items", [])
-                if items:
-                    # Take all returned items, sort by ID descending (newest first)
-                    items.sort(key=lambda x: int(x.get('id', 0)), reverse=True)
-                    return items[0]
-            return None
+            items = r.json()
+            if not isinstance(items, list):
+                items = items.get("items", [])
+            if not items:
+                return None
+            return sorted(items,
+                key=lambda x: x.get("updated_at", ""),
+                reverse=True)[0]
         except Exception as e:
-            print(f"[API] Error getting latest save: {e}")
+            print(f"[API] get_latest_save error: {e}")
             return None
 
-    def get_save_by_slot(self, rom_id, slot):
-        """
-        Fetch a specific save slot for a rom.
-        Returns the save item dict or None.
-        """
+    def get_latest_state(self, rom_id):
         try:
-            url = f"{self.host}/api/roms/{rom_id}/saves"
-            try:
-                r = requests.get(url, headers=self.get_auth_headers(), timeout=10)
-                if r.status_code != 200:
-                    url = f"{self.host}/api/saves"
-                    r = requests.get(url, headers=self.get_auth_headers(),
-                                    params={"rom_id": rom_id}, timeout=10)
-            except (requests.exceptions.ConnectTimeout,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.RequestException) as e:
-                print(f"[API] Network error in get_save_by_slot: {e}")
+            r = requests.get(
+                f"{self.host}/api/states",
+                params={"rom_id": rom_id},
+                headers=self.get_auth_headers(),
+                timeout=10
+            )
+            if r.status_code != 200:
                 return None
-
-            if r.status_code == 200:
-                data = r.json()
-                items = data if isinstance(data, list) else data.get("items", [])
-                # Find the save matching the requested slot
-                for item in items:
-                    if item.get("slot") == slot:
-                        return item
-            return None
+            items = r.json()
+            if not isinstance(items, list):
+                items = items.get("items", [])
+            if not items:
+                return None
+            return sorted(items,
+                key=lambda x: x.get("updated_at", ""),
+                reverse=True)[0]
         except Exception as e:
-            print(f"[API] Error getting save by slot: {e}")
+            print(f"[API] get_latest_state error: {e}")
             return None
 
     def download_save(self, save_item, target_path, thread=None):
@@ -292,14 +275,31 @@ class RomMClient:
             print(f"[API] Error downloading save: {e}")
             return False
 
-    def upload_save(self, rom_id, emulator, file_path, slot="wingosy-windows"):
+    def download_state(self, state_obj, dest_path):
+        try:
+            dl_path = state_obj.get('download_path') or \
+                      state_obj.get('file_path') or \
+                      f"/api/states/{state_obj['id']}/download"
+            url = dl_path if dl_path.startswith('http') \
+                  else f"{self.host}{dl_path}"
+            r = requests.get(url, headers=self.get_auth_headers(),
+                           stream=True, timeout=60)
+            with open(dest_path, 'wb') as f:
+                for chunk in r.iter_content(65536):
+                    if chunk: f.write(chunk)
+            return True
+        except Exception as e:
+            print(f"[API] download_state error: {e}")
+            return False
+
+    def upload_save(self, rom_id, emulator, file_path, slot="wingosy-windows", raw=False):
         try:
             url = f"{self.host}/api/saves"
             params = {"rom_id": rom_id, "emulator": emulator, "slot": slot}
-            file_name = f"sync_{rom_id}.zip"
+            filename = os.path.basename(file_path)
             
             with open(file_path, 'rb') as f:
-                files = {'saveFile': (file_name, f, 'application/octet-stream')}
+                files = {'saveFile': (filename, f, 'application/octet-stream')}
                 try:
                     r = requests.post(url, params=params, headers=self.get_auth_headers(), files=files, timeout=60)
                 except (requests.exceptions.ConnectTimeout,
@@ -308,8 +308,48 @@ class RomMClient:
                         requests.exceptions.RequestException) as e:
                     print(f"[API] Network error in upload_save: {e}")
                     return False, str(e)
+                print(f"[API] upload_save -> {r.status_code}: {r.text[:200]}")
                 return r.status_code in [200, 201], r.text
         except Exception as e:
+            print(f"[API] upload_save error: {e}")
+            return False, str(e)
+
+    def upload_state(self, rom_id, emulator, file_path,
+                     slot="wingosy-state"):
+        try:
+            from pathlib import Path
+            filename = Path(file_path).name
+            
+            # Strip .auto suffix — RomM wants .state not .state.auto
+            if filename.endswith('.auto'):
+                filename = filename[:-5]
+            
+            # Strip RomM timestamp brackets if somehow present
+            import re
+            filename = re.sub(
+                r'\s*\[[^\]]*\d{4}-\d{2}-\d{2}[^\]]*\]', '', filename)
+            
+            url = f"{self.host}/api/states"
+            params = {
+                "rom_id": rom_id,
+                "emulator": emulator,
+            }
+            
+            with open(file_path, 'rb') as f:
+                files = {'stateFile': (filename, f,
+                                       'application/octet-stream')}
+                r = requests.post(
+                    url,
+                    params=params,
+                    headers=self.get_auth_headers(),
+                    files=files,
+                    timeout=60
+                )
+                print(f"[API] upload_state -> {r.status_code}: "
+                      f"{r.text[:300]}")
+                return r.status_code in [200, 201], r.text
+        except Exception as e:
+            print(f"[API] upload_state error: {e}")
             return False, str(e)
 
     def get_firmware(self):

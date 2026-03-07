@@ -299,16 +299,25 @@ class TestSavePathResolution:
         assert result is not None, "GameCube save path returned None"
 
     def test_retroarch_save_path_returns_something(self):
-        """RetroArch should always return a .srm path."""
-        res = self.watcher.resolve_save_path(
-            "Multi-Console (RetroArch)", "Super Mario World",
-            '"C:/emus/retroarch.exe" "C:/roms/smw.sfc"',
-            "C:/emus/retroarch.exe", "snes"
-        )
-        assert res is not None, "RetroArch save path returned None"
-        path, is_f = res
-        assert str(path).endswith(".srm"), (
-            f"RetroArch save path should be .srm, got: {path}")
+        """RetroArch should always return a dict with paths."""
+        w = self.watcher
+        game = {"name": "Super Mario World", "fs_name": "smw.sfc", "platform_slug": "snes"}
+        emu_data = {"path": "C:/emus/retroarch.exe"}
+        
+        result = w.get_retroarch_save_path(game, emu_data)
+        assert result is not None, "Should return a dict, not None"
+        assert isinstance(result, dict), (
+            f"Expected dict, got: {type(result)}")
+        assert result['srm'] is not None, (
+            "SRM path should not be None for a standard platform")
+        assert result['srm'].endswith('.srm'), (
+            f"SRM path should end with .srm, got: {result['srm']}")
+        assert result['state'] is not None, (
+            "State path should not be None for a standard platform")
+        assert result['state'].endswith('.state.auto'), (
+            f"State path should end with .state.auto, got: {result['state']}")
+        assert result['is_folder'] == False, (
+            "Standard platform should not be folder-based")
 
 
 # ── API Contract ──────────────────────────────────────────────────────────
@@ -380,9 +389,11 @@ class TestRetroArchCfg:
                 "platform_slug": "snes"}
         w = WingosyWatcher.__new__(WingosyWatcher)
         w.config = ConfigManager()
-        # Ensure mode is srm for 2-tuple return
-        w.config.data["retroarch_save_mode"] = "srm"
-        path, is_folder = w.get_retroarch_save_path(game, emu_data)
+        
+        result = w.get_retroarch_save_path(game, emu_data)
+        path = result['srm']
+        is_folder = result['is_folder']
+        
         assert path is not None
         assert "Snes9x" in path or "snes" in path.lower()
         assert path.endswith(".srm")
@@ -398,9 +409,11 @@ class TestRetroArchCfg:
         from src.config import ConfigManager
         w = WingosyWatcher.__new__(WingosyWatcher)
         w.config = ConfigManager()
-        # Mode doesn't matter for PSP, but let's be consistent
-        w.config.data["retroarch_save_mode"] = "srm"
-        path, is_folder = w.get_retroarch_save_path(game, emu_data)
+        
+        result = w.get_retroarch_save_path(game, emu_data)
+        path = result['srm']
+        is_folder = result['is_folder']
+        
         assert path is not None
         assert "PPSSPP" in path
         assert "SAVEDATA" in path

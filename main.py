@@ -6,9 +6,35 @@ from src.api import RomMClient
 from src.watcher import WingosyWatcher
 from src.ui import WingosyMainWindow, SetupDialog
 
-VERSION = "0.5.3"
+import io
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(
+        sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+VERSION = "0.5.4"
+
+def _cleanup_old_mei_folders():
+    """Delete stale PyInstaller _MEI temp folders from previous runs."""
+    import tempfile
+    import shutil
+    import os
+    if not getattr(sys, 'frozen', False):
+        return
+    tmp = Path(tempfile.gettempdir())
+    current_mei = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else None
+    for folder in tmp.glob("_MEI*"):
+        if current_mei and folder == current_mei:
+            continue  # never delete our own folder
+        try:
+            shutil.rmtree(folder, ignore_errors=True)
+            print(f"[Startup] Cleaned up stale temp folder: {folder}")
+        except Exception as e:
+            print(f"[Startup] Could not clean {folder}: {e}")
 
 def main():
+    _cleanup_old_mei_folders()
     app = QApplication(sys.argv)
     app.setApplicationName("Wingosy Launcher")
     app.setOrganizationName("Wingosy")

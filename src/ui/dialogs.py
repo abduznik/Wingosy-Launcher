@@ -20,6 +20,7 @@ from src.platforms import RETROARCH_PLATFORMS, RETROARCH_CORES, platform_matches
 from src.utils import read_retroarch_cfg, write_retroarch_cfg_values
 
 _retroarch_autosave_checked = False
+_ppsspp_assets_checked = False
 
 def check_retroarch_autosave(ra_exe_path, platform_slug, parent, config=None):
     """
@@ -384,8 +385,49 @@ class SettingsDialog(QDialog):
         self.config.set("host", new_host)
         QMessageBox.information(self, "Restarting",
             "Host saved. The app will now restart.")
-        import sys, os
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        self._do_restart()
+
+    @staticmethod
+    def _do_restart():
+        import sys
+        import subprocess
+        import threading
+
+        exe = sys.executable
+        args = sys.argv[:]
+
+        def _launch_after_delay():
+            import time
+            time.sleep(1)
+            try:
+                if getattr(sys, 'frozen', False):
+                    # Running as PyInstaller .exe — spawn completely 
+                    # fresh process, detached from current one
+                    subprocess.Popen(
+                        [exe] + args,
+                        close_fds=True,
+                        creationflags=(
+                            subprocess.DETACHED_PROCESS |
+                            subprocess.CREATE_NEW_PROCESS_GROUP
+                        )
+                    )
+                else:
+                    # Running as plain Python script
+                    subprocess.Popen(
+                        [exe] + args,
+                        close_fds=True
+                    )
+            except Exception as e:
+                print(f"[Restart] Failed to relaunch: {e}")
+
+        t = threading.Thread(target=_launch_after_delay, daemon=True)
+        t.start()
+
+        # Exit current process immediately and cleanly
+        # QApplication.quit() first to flush any pending Qt events
+        from PySide6.QtWidgets import QApplication
+        QApplication.quit()
+        sys.exit(0)
 
     def show_about(self):
         QMessageBox.about(self, "About Wingosy",
@@ -495,6 +537,7 @@ class GameDetailDialog(QDialog):
         self.setWindowTitle(game.get("name"))
         self.resize(500, 450)
         self.dl_thread = None
+        self._conflict_shown = False
         layout = QVBoxLayout(self)
         info_layout = QHBoxLayout()
         self.img_label = QLabel()
@@ -558,6 +601,198 @@ class GameDetailDialog(QDialog):
         button_box = QDialogButtonBox(QDialogButtonBox.Close, self)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _do_blocking_pull(self, save_info, is_retroarch):
+        """
+        Pull cloud saves synchronously before launch.
+        Shows conflict dialog if needed and waits for resolution.
+        Returns True if launch should proceed, False to cancel.
+        """
+        watcher = self.main_window.watcher
+        rom_id = self.game['id']
+        title = self.game['name']
+        self._conflict_shown = False
+        
+        if is_retroarch and isinstance(save_info, dict):
+            srm_path = save_info.get('srm')
+            state_path = save_info.get('state')
+            psp_folder = save_info.get('psp_folder')
+            
+            if psp_folder:
+                # PSP: pull zip save to psp_folder
+                latest_save = watcher.client.get_latest_save(rom_id)
+                if latest_save:
+                    result = self._apply_save_blocking(
+                        rom_id, title, latest_save,
+                        str(psp_folder), file_type="save",
+                        is_folder=True)
+                    if result is False:
+                        return False
+                
+                # PSP state (same as other RA cores)
+                state_path = save_info.get('state')
+                if state_path:
+                    latest_state = watcher.client.get_latest_state(rom_id)
+                    if latest_state:
+                        result = self._apply_save_blocking(
+                            rom_id, title, latest_state,
+                            state_path, file_type="state")
+                        if result is False:
+                            return False
+            else:
+                # Normal RetroArch: SRM + state
+                if srm_path:
+                    latest_save = watcher.client.get_latest_save(rom_id)
+                    if latest_save:
+                        result = self._apply_save_blocking(
+                            rom_id, title, latest_save, 
+                            srm_path, file_type="save")
+                        if result is False:
+                            return False
+
+                if state_path:
+                    latest_state = watcher.client.get_latest_state(rom_id)
+                    if latest_state:
+                        result = self._apply_save_blocking(
+                            rom_id, title, latest_state,
+                            state_path, file_type="state")
+                        if result is False:
+                            return False
+        else:
+            # Non-RetroArch
+            local_path = save_info if isinstance(save_info, str) else None
+            if local_path:
+                latest_save = watcher.client.get_latest_save(rom_id)
+                if latest_save:
+                    result = self._apply_save_blocking(
+                        rom_id, title, latest_save,
+                        local_path, file_type="save")
+                    if result is False:
+                        return False
+        return True
+
+    def _apply_save_blocking(self, rom_id, title, cloud_obj, 
+                              local_path, file_type="save", is_folder=False):
+        """
+        Download and apply a single save/state file synchronously.
+        Shows conflict dialog if local file exists and differs.
+        Returns False only if user explicitly cancels.
+        """
+        import os, tempfile, zipfile, re
+        from pathlib import Path
+        
+        watcher = self.main_window.watcher
+        
+        server_updated_at = cloud_obj.get('updated_at', '')
+        local_exists = os.path.isdir(local_path) if is_folder else os.path.exists(local_path)
+        
+        # Check cache — skip if already up to date
+        cache_entry = watcher.sync_cache.get(str(rom_id), {})
+        if isinstance(cache_entry, dict):
+            cached_ts = cache_entry.get(f'{file_type}_updated_at','')
+        else:
+            cached_ts = cache_entry if file_type=='save' else ''
+        
+        if cached_ts == server_updated_at and local_exists:
+            print(f"[Launch] {file_type} already up to date, skipping")
+            return True
+        
+        # Download
+        tmp = tempfile.mktemp(suffix=f".{file_type}")
+        if file_type == "state":
+            ok = watcher.client.download_state(cloud_obj, tmp)
+        else:
+            ok = watcher.client.download_save(cloud_obj, tmp)
+        
+        if not ok:
+            return True  # download failed, proceed anyway
+        
+        # Clean filename and determine dest path
+        orig_name = cloud_obj.get('file_name', '')
+        clean_name = re.sub(
+            r'\s*\[[^\]]*\d{4}-\d{2}-\d{2}[^\]]*\]', '', orig_name)
+        
+        # Conflict check — if local exists and cache has entry
+        rid_str = str(rom_id)
+        if (local_exists 
+                and (rid_str in watcher.sync_cache)
+                and not self._conflict_shown):
+            
+            self._conflict_shown = True
+            from PySide6.QtWidgets import QMessageBox
+            msg = QMessageBox(self)
+            msg.setWindowTitle(f"Save Conflict — {title}")
+            msg.setText(
+                f"Your local {file_type} differs from the cloud.\n\n"
+                f"Cloud: {server_updated_at[:19]}\n"
+                f"Which do you want to use?")
+            keep_local = msg.addButton(
+                "Keep Local", QMessageBox.RejectRole)
+            use_cloud = msg.addButton(
+                "Use Cloud", QMessageBox.AcceptRole)
+            msg.exec()
+            if msg.clickedButton() == keep_local:
+                if os.path.exists(tmp): os.remove(tmp)
+                return True  # keep local, proceed with launch
+        
+        # Apply cloud file
+        dest = Path(local_path)
+        if is_folder:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Backup existing
+        if dest.exists():
+            bak = Path(str(dest) + ".bak")
+            try:
+                import shutil
+                if is_folder: shutil.copytree(str(dest), str(bak), dirs_exist_ok=True)
+                else: shutil.copy2(str(dest), str(bak))
+            except Exception:
+                pass
+        
+        # Write file
+        import shutil
+        try:
+            if is_folder or (zipfile.is_zipfile(tmp) and not local_path.endswith(('.srm', '.state'))):
+                # Zip handling
+                if os.path.exists(local_path) and is_folder:
+                    # For PSP folders, we might want to merge or clear. 
+                    # RomM saves are usually the content of SAVEDATA.
+                    pass
+                os.makedirs(local_path, exist_ok=True)
+                with zipfile.ZipFile(tmp, 'r') as z:
+                    z.extractall(local_path)
+                print(f"[Launch] Extracted {file_type} to {local_path}")
+            else:
+                shutil.copy2(tmp, str(dest))
+            
+                # For states: ensure .auto suffix
+                if (file_type == "state" 
+                        and dest.suffix == '.state'
+                        and not dest.name.endswith('.state.auto')):
+                    auto_path = dest.with_name(dest.name + '.auto')
+                    if auto_path.exists():
+                        if auto_path.is_dir(): shutil.rmtree(auto_path)
+                        else: auto_path.unlink()
+                    dest.rename(auto_path)
+                    print(f"[Launch] State written to {auto_path}")
+                else:
+                    print(f"[Launch] {file_type} written to {dest}")
+            
+            # Update cache
+            if not isinstance(watcher.sync_cache.get(str(rom_id)), dict):
+                watcher.sync_cache[str(rom_id)] = {}
+            watcher.sync_cache[str(rom_id)][
+                f'{file_type}_updated_at'] = server_updated_at
+            watcher.save_cache()
+        except Exception as e:
+            print(f"[Launch] Failed to apply {file_type}: {e}")
+        finally:
+            if os.path.exists(tmp): os.remove(tmp)
+        
+        return True
 
     def play_game(self):
         platform = self.game.get('platform_slug')
@@ -626,7 +861,9 @@ class GameDetailDialog(QDialog):
         try:
             # Build launch arguments
             args = []
-            if emu_display_name and "RetroArch" in emu_display_name:
+            is_retroarch = emu_display_name and "RetroArch" in emu_display_name
+            
+            if is_retroarch:
                 # Once-per-session auto-save prompt
                 check_retroarch_autosave(emu_data["path"], platform, self, self.config)
 
@@ -668,143 +905,46 @@ class GameDetailDialog(QDialog):
             watcher = self.main_window.watcher
             rom_id = self.game['id']
             title = self.game['name']
-            full_cmd = f"\"{emu_data['path']}\" \"{local_rom}\""
-            res = watcher.resolve_save_path(emu_display_name, title, full_cmd, emu_data['path'], platform)
             
-            if res:
-                save_path, is_folder = res
-                save_path = str(Path(save_path).resolve())
-                
-                # Special marker for Dolphin GC card sync
-                if is_folder == "gc_card":
-                    is_folder = False # Do not treat Card A as a sync folder itself during pull
+            if is_retroarch:
+                save_info = watcher.get_retroarch_save_path(self.game, {"path": emu_data['path']})
+            else:
+                full_cmd = f"\"{emu_data['path']}\" \"{local_rom}\""
+                res = watcher.resolve_save_path(emu_display_name, title, full_cmd, emu_data['path'], platform)
+                save_info = res[0] if res else None
 
-                # Blocking sync with local event loop
-                loop = QEventLoop()
-                conflict_captured = []
-
-                def on_conflict(t, lp, td, rid):
-                    if rid == str(rom_id):
-                        conflict_captured.append((t, lp, td, rid))
-                        loop.quit()
-
-                try:
-                    watcher.conflict_signal.disconnect(self.main_window.handle_conflict)
-                except RuntimeError:
-                    pass
-                watcher.conflict_signal.connect(on_conflict)
-
-                class PreLaunchSyncWorker(QThread):
-                    finished_sync = Signal(str) # server_updated_at
-                    def run(self):
-                        latest = watcher.client.get_latest_save(rom_id)
-                        ua = latest.get('updated_at', '') if latest else ''
-                        watcher.pull_server_save(rom_id, title, save_path, is_folder)
-                        self.finished_sync.emit(ua)
-
-                server_ua_container = [None]
-                def set_ua(ua): server_ua_container[0] = ua
-
-                worker = PreLaunchSyncWorker()
-                worker.finished_sync.connect(set_ua)
-                worker.finished_sync.connect(loop.quit)
-                worker.start()
-                loop.exec()
-
-                watcher.conflict_signal.disconnect(on_conflict)
-                watcher.conflict_signal.connect(self.main_window.handle_conflict, Qt.QueuedConnection)
-
-                if conflict_captured:
-                    t, lp, td, rid = conflict_captured[0]
-                    dialog = ConflictDialog(t, self)
-                    if dialog.exec() == QDialog.Accepted:
-                        mode = dialog.result_mode
-                        server_updated_at = server_ua_container[0]
-
-                        if mode == "cloud":
-                            # We'll re-run pull with force=True inside a thread
-                            # To avoid duplicating logic, we can just use the ConflictResolveThread
-                            # but we need to update cache after.
-                            resolve_thread = ConflictResolveThread(watcher, rid, t, lp, is_folder)
-                            resolve_thread.start()
-                            resolve_thread.wait()
-
-                            if server_updated_at:
-                                watcher.sync_cache[str(rid)] = server_updated_at
-                                watcher.save_cache()
-                        elif mode == "local":
-                            if server_updated_at:
-                                watcher.sync_cache[str(rid)] = server_updated_at
-                                watcher.save_cache()
-                        elif mode == "both":
-                            cloud_bak = str(lp) + ".cloud_backup"
-                            if os.path.exists(cloud_bak):
-                                if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak, ignore_errors=True)
-                                else: os.remove(cloud_bak)
-
-                            # temp_dl (td) could be a file or folder depending on how it was downloaded
-                            if os.path.isdir(td): shutil.copytree(td, cloud_bak)
-                            else: shutil.copy2(td, cloud_bak)
-                            self.main_window.log(f"📁 Cloud save backed up to: {cloud_bak}")
-
-                            if server_updated_at:
-                                watcher.sync_cache[str(rid)] = server_updated_at
-                                watcher.save_cache()
-
-                        if os.path.exists(td):
-                            try: shutil.rmtree(td, ignore_errors=True) if os.path.isdir(td) else os.remove(td)
-                            except: pass
-                    else:
-                        # User cancelled conflict dialog - abort launch
-                        if os.path.exists(td):
-                            try: shutil.rmtree(td, ignore_errors=True) if os.path.isdir(td) else os.remove(td)
-                            except: pass
-                        return
-
-                watcher.skip_next_pull_rom_id = str(rom_id)
-                self.main_window.log(f"✅ Pre-launch sync complete for {title}.")
+            if self.main_window.config.get("auto_pull_saves", True):
+                self.main_window.log(f"☁️ Checking cloud for {title}...")
+                pull_completed = self._do_blocking_pull(save_info, is_retroarch)
+                if pull_completed is False:
+                    return  # user cancelled or error
 
             # Create a clean environment for the emulator
             clean_env = os.environ.copy()
-            
-            # 1. Remove Wingosy's Qt variables
             for key in ["QT_QPA_PLATFORM_PLUGIN_PATH", "QT_PLUGIN_PATH", "QT_QPA_FONTDIR", "QT_QPA_PLATFORM", "QT_STYLE_OVERRIDE"]:
                 clean_env.pop(key, None)
             
-            # 2. PyInstaller-specific cleanup when frozen
             if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
                 mei_path = str(Path(sys._MEIPASS)).lower()
-                
-                # Scrub PATH of our internal directory to prevent DLL search conflicts
                 path_val = clean_env.get("PATH", "")
                 path_parts = path_val.split(os.pathsep)
                 new_path_parts = [p for p in path_parts if mei_path not in str(Path(p)).lower()]
                 clean_env["PATH"] = os.pathsep.join(new_path_parts)
 
-                # Physically rename conflicting DLLs in MEI temp dir so child 
-                # processes cannot load them instead of their own copies
-                conflicting_dlls = [
-                    'vcruntime140.dll',
-                    'vcruntime140_1.dll', 
-                    'msvcp140.dll',
-                    'msvcp140_1.dll',
-                    'concrt140.dll'
-                ]
+                conflicting_dlls = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'concrt140.dll']
                 for dll in conflicting_dlls:
                     dll_path = Path(sys._MEIPASS) / dll
                     if dll_path.exists():
-                        try:
-                            dll_path.rename(dll_path.with_suffix('.dll.bak'))
-                        except Exception:
-                            pass
+                        try: dll_path.rename(dll_path.with_suffix('.dll.bak'))
+                        except Exception: pass
 
             emu_dir_cwd = str(Path(emu_data['path']).parent)
             proc = subprocess.Popen(args, env=clean_env, cwd=emu_dir_cwd)
-            self.main_window.log(f"🚀 Launched {emu_data['exe']} with {rom_name} (PID: {proc.pid})")
+            self.main_window.log(f"🚀 Launched {emu_display_name} (PID: {proc.pid})")
             
             if self.main_window.watcher:
                 QTimer.singleShot(0, lambda: self.main_window.watcher.track_session(
-                    proc, emu_display_name, self.game, str(local_rom), emu_data['path']
+                    proc, emu_display_name, self.game, str(local_rom), emu_data['path'], skip_pull=True
                 ))
             
             self.accept()

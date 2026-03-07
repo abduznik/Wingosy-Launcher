@@ -36,7 +36,7 @@ def main():
     args = parser.parse_args()
 
     logger.info("=" * 60)
-    logger.info("  WINGOSY DEMO MODE — based on v0.5.3")
+    logger.info("  WINGOSY DEMO MODE — based on v0.5.4")
     logger.info(f"  Fake library size: {args.count} games")
     logger.info(f"  Log file: {log_path.resolve()}")
     logger.info("=" * 60)

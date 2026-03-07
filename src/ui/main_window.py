@@ -478,6 +478,17 @@ class WingosyMainWindow(QMainWindow):
         dialog = ConflictDialog(title, self)
         if dialog.exec() == QDialog.Accepted:
             mode = dialog.result_mode
+            # Only skip next pull if user explicitly chose to keep their local file
+            if mode == "local":
+                print(f"[PULL DEBUG] User chose Keep Local. Setting skip_next_pull for {rom_id}")
+                self.watcher.skip_next_pull_rom_id = str(rom_id)
+            else:
+                self.watcher.skip_next_pull_rom_id = None
+
+            # Always clear it after 30 seconds max to prevent it sticking forever
+            QTimer.singleShot(30000, lambda: setattr(
+                self.watcher, 'skip_next_pull_rom_id', None))
+
             if mode == "cloud":
                 t = ConflictResolveThread(self.watcher, rom_id, title, local_path, os.path.isdir(local_path))
                 t.finished.connect(lambda ok: self.log("✅ Cloud save applied." if ok else "❌ Cloud save apply failed."))
@@ -522,6 +533,10 @@ class WingosyMainWindow(QMainWindow):
         self.tray_icon.show()
 
     def closeEvent(self, event):
+        if hasattr(self, '_fetch_thread') and self._fetch_thread.isRunning():
+            self._fetch_thread.quit()
+            self._fetch_thread.wait()
+        
         settings = QSettings("Wingosy", "WingosyLauncher")
         settings.setValue("geometry", self.saveGeometry())
         if self.tray_icon.isVisible():
