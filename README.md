@@ -5,6 +5,8 @@
 # Wingosy
 > A game launcher and cloud save sync client for RomM on Windows. Browse your library, launch games, and keep saves backed up automatically.
 
+![Tests](https://github.com/abduznik/Wingosy-Launcher/actions/workflows/test.yml/badge.svg)
+
 ## Features
 - Browse full RomM library with cover art, ratings, platform filter and search
 - Launch games via configured emulators with one click

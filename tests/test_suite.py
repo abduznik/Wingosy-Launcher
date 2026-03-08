@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+LIVE = os.environ.get("ROMM_TEST_LIVE", "0") == "1"
+
 from src.platforms import (RETROARCH_PLATFORMS, RETROARCH_CORES,
                             platform_matches)
 from src.config import ConfigManager
@@ -741,6 +743,7 @@ class TestEmulatorSchema:
 
 # ── Live Connection ───────────────────────────────────────────────────────
 
+@pytest.mark.skipif(not LIVE, reason="requires live RomM server (set ROMM_TEST_LIVE=1)")
 class TestLiveConnection(unittest.TestCase):
     """
     Live integration tests against a real RomM server.

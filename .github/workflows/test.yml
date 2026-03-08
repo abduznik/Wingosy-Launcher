@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - main
+      - version0.6.0
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python 3.11
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Install virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y 
+            libgl1 
+            libglib2.0-0 
+            xvfb
+
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run python -m pytest tests/ -v --tb=short
+        env:
+          DISPLAY: :99
+
+      - name: Run tests (non-Linux)
+        if: runner.os != 'Linux'
+        run: python -m pytest tests/ -v --tb=short
