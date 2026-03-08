@@ -56,19 +56,22 @@ class SaveStrategy(ABC):
         Override if needed.
         """
         return None
+
+    def _get_rom_stem(self, rom: dict) -> str:
+        """Try different possible keys to find the ROM filename stem."""
+        for key in ("file_name", "fs_name", "rom_path", "path"):
+            val = rom.get(key, "")
+            if val:
+                return Path(val).stem
+        # Last resort: use display name
+        return rom.get("name", "")
     
-    def _get_retroarch_save_dir(self) -> Optional[Path]:
-        """Helper for RetroArch strategies."""
-        # Use config_path from emulator if present
-        ra_cfg = self.emulator.get("config_path", "")
-        if not ra_cfg:
-            # Fallback to config manager's path if we had it
-            ra_cfg = self.config.get("retroarch_config", "")
-            
-        if not ra_cfg or not Path(ra_cfg).exists():
+    def _parse_ra_cfg(self, cfg_path: str) -> Optional[Path]:
+        """Helper to parse retroarch.cfg for savefile_directory."""
+        if not cfg_path or not Path(cfg_path).exists():
             return None
         try:
-            with open(ra_cfg, 'r', encoding='utf-8', errors='replace') as f:
+            with open(cfg_path, 'r', encoding='utf-8', errors='replace') as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith("savefile_directory"):
@@ -78,64 +81,82 @@ class SaveStrategy(ABC):
                             if d and d != "default":
                                 return Path(d)
         except Exception as e:
-            logging.warning(f"[Strategy] RA cfg read error: {e}")
+            logging.warning(f"[Strategy] RA cfg parse error at {cfg_path}: {e}")
+        return None
+
+    def _get_retroarch_save_dir(self) -> Optional[Path]:
+        """Helper for RetroArch strategies with fallbacks."""
+        # 1. Try configured retroarch.cfg path from emulator
+        ra_cfg = self.emulator.get("config_path", "")
+        if ra_cfg:
+            res = self._parse_ra_cfg(ra_cfg)
+            if res: return res
+            
+        # 2. Try global config
+        ra_cfg_global = self.config.get("retroarch_config", "")
+        if ra_cfg_global:
+            res = self._parse_ra_cfg(ra_cfg_global)
+            if res: return res
+
+        # 3. Try to find retroarch.cfg next to the emulator executable
+        exe = self.emulator.get("executable_path", "")
+        if exe:
+            cfg_next_to_exe = Path(exe).parent / "retroarch.cfg"
+            if cfg_next_to_exe.exists():
+                res = self._parse_ra_cfg(str(cfg_next_to_exe))
+                if res: return res
+        
+        # 4. Try default RetroArch save locations on Windows
+        import sys
+        if sys.platform == "win32":
+            candidates = [
+                Path.home() / "AppData" / "Roaming" / "RetroArch" / "saves",
+                Path.home() / "AppData" / "Roaming" / "RetroArch" / "states",
+            ]
+            for c in candidates:
+                if c.exists():
+                    return c
+                    
         return None
 
 
 class RetroArchStrategy(SaveStrategy):
     """
     Handles RetroArch .srm save files.
-    Looks in the RetroArch savefile_directory from retroarch.cfg,
-    falling back to the ROM directory.
     """
     mode_id = "retroarch"
     
     def get_save_files(self, rom: dict) -> list[Path]:
         save_dir = self._get_retroarch_save_dir()
-        rom_name = Path(rom.get("fs_name") or rom.get("file_name", "")).stem
+        rom_stem = self._get_rom_stem(rom)
         
-        if not rom_name:
+        if not rom_stem:
+            logging.warning(f"[RetroArchStrategy] No ROM stem found. Keys: {list(rom.keys())}")
             return []
         
         candidates = []
-        
-        # Priority 1: RetroArch configured save dir
         if save_dir and save_dir.exists():
-            # Check for subfolders (RA often uses core-named subfolders)
-            # This logic might need more nuance based on core, but starting simple
-            for p in save_dir.rglob(f"{rom_name}.srm"):
-                candidates.append(p)
-            for p in save_dir.rglob(f"{rom_name}.sav"):
-                candidates.append(p)
-            for p in save_dir.rglob(f"{rom_name}.state*"):
-                candidates.append(p)
-        
-        # Priority 2: Alongside ROM (fallback)
-        if not candidates:
-            # We don't necessarily know ROM dir here easily without more context,
-            # but usually RA uses its saves folder.
-            pass
+            # Check for subfolders or direct files
+            for p in save_dir.rglob(f"{rom_stem}.srm"): candidates.append(p)
+            for p in save_dir.rglob(f"{rom_stem}.sav"): candidates.append(p)
+            for p in save_dir.rglob(f"{rom_stem}.state*"): candidates.append(p)
             
         return candidates
     
     def restore_save_files(self, rom: dict, save_data: bytes, filename: str) -> bool:
         save_dir = self._get_retroarch_save_dir()
-        rom_name = Path(rom.get("fs_name") or rom.get("file_name", "")).stem
+        rom_stem = self._get_rom_stem(rom)
         
-        if not rom_name:
+        if not rom_stem:
             return False
         
         dest_dir = save_dir
         if not dest_dir:
-            # Last resort fallback if no RA dir found
             return False
         
         dest_dir.mkdir(parents=True, exist_ok=True)
         
-        # Use server filename if valid, else derive from ROM name
-        dest_name = filename if filename.endswith((".srm", ".sav")) else f"{rom_name}.srm"
-        
-        # If it's a state, keep original filename
+        dest_name = filename if filename.endswith((".srm", ".sav")) else f"{rom_stem}.srm"
         if ".state" in filename:
             dest_name = filename
 
@@ -154,10 +175,7 @@ class RetroArchStrategy(SaveStrategy):
 
 class FolderStrategy(SaveStrategy):
     """
-    Handles emulators that store saves in a dedicated folder per game
-    or per emulator (e.g. Dolphin, RPCS3, Yuzu-style).
-    
-    Save dir is taken from emulator["save_resolution"]["path"] or ["save_dir"]
+    Handles emulators that store saves in a dedicated folder.
     """
     mode_id = "folder"
     
@@ -172,8 +190,6 @@ class FolderStrategy(SaveStrategy):
         base = self._base_dir(rom)
         if not base or not base.exists():
             return []
-        
-        # Collect all files recursively
         return [p for p in base.rglob("*") if p.is_file()]
     
     def restore_save_files(self, rom: dict, save_data: bytes, filename: str) -> bool:
@@ -197,40 +213,29 @@ class FolderStrategy(SaveStrategy):
 
 class FileStrategy(SaveStrategy):
     """
-    Handles emulators that use a single save file per ROM, 
-    stored alongside the ROM file or in a configured path.
+    Handles emulators that use a single save file per ROM.
     """
     mode_id = "file"
-    mode_id_alt = "direct_file" # Alias for older configs
     
     def _save_path(self, rom: dict) -> Optional[Path]:
         res = self.emulator.get("save_resolution", {})
         save_dir = res.get("path") or res.get("save_dir") or res.get("srm_dir")
+        rom_stem = self._get_rom_stem(rom)
         
-        rom_name = Path(rom.get("fs_name") or rom.get("file_name", "")).stem
-        if not rom_name:
+        if not rom_stem or not save_dir:
             return None
         
-        if save_dir:
-            base = Path(save_dir)
-        else:
-            # Fallback: same dir as ROM if we had it
-            return None
-        
-        # Try common save extensions or specific one from emulator
+        base = Path(save_dir)
         target_ext = res.get("extension")
         if target_ext:
             if not target_ext.startswith("."): target_ext = "." + target_ext
-            p = base / f"{rom_name}{target_ext}"
-            return p
+            return base / f"{rom_stem}{target_ext}"
 
         for ext in (".sav", ".srm", ".save", ".dat"):
-            p = base / f"{rom_name}{ext}"
-            if p.exists():
-                return p
+            p = base / f"{rom_stem}{ext}"
+            if p.exists(): return p
         
-        # Default to .sav
-        return base / f"{rom_name}.sav"
+        return base / f"{rom_stem}.sav"
     
     def get_save_files(self, rom: dict) -> list[Path]:
         p = self._save_path(rom)
@@ -299,7 +304,7 @@ STRATEGY_REGISTRY: dict[str, type[SaveStrategy]] = {
     "retroarch": RetroArchStrategy,
     "folder": FolderStrategy,
     "file": FileStrategy,
-    "direct_file": FileStrategy, # Alias
+    "direct_file": FileStrategy,
     "windows": WindowsNativeStrategy,
 }
 
@@ -308,7 +313,6 @@ def get_strategy(config: dict, emulator: dict) -> SaveStrategy:
     Return the correct SaveStrategy for an emulator.
     """
     mode = emulator.get("save_resolution", {}).get("mode", "retroarch")
-    
     if emulator.get("id") == "windows_native" or emulator.get("is_native"):
         mode = "windows"
     

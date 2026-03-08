@@ -90,6 +90,7 @@ class WingosyWatcher(QThread):
 
     def _get_max_mtime(self, strategy, rom):
         files = strategy.get_save_files(rom)
+        if not files: return 0
         return max((os.path.getmtime(p) for p in files if p.exists()), default=0)
 
     def track_session(self, proc, emu_display_name, game_data, local_rom_path, emu_path, skip_pull=False, windows_save_dir=None):
@@ -98,6 +99,9 @@ class WingosyWatcher(QThread):
             rom_id = game_data['id']
             title = game_data['name']
             
+            logging.debug(f"[Sync] track_session for {title} (ROM ID: {rom_id})")
+            logging.debug(f"[Sync] ROM dict keys: {list(game_data.keys())}")
+
             all_emus = emulators.load_emulators()
             this_emu = next((e for e in all_emus if e["name"] == emu_display_name or e["id"] == emu_display_name), None)
             
@@ -109,6 +113,7 @@ class WingosyWatcher(QThread):
                 return
 
             strategy = get_strategy(self.config, this_emu)
+            logging.debug(f"[Sync] Strategy: {strategy.__class__.__name__}")
             
             # 1. Pull if needed
             should_pull = (self.config.get("auto_pull_saves", True) and not skip_pull)
@@ -159,18 +164,48 @@ class WingosyWatcher(QThread):
 
         self.log_signal.emit(f"🛑 Session Ended: {title}")
         
+        logging.debug(f"[Sync] Post-session check for {title}")
+        logging.debug(f"[Sync] Strategy: {strategy.__class__.__name__}")
+        
+        save_files = strategy.get_save_files(rom)
+        logging.debug(f"[Sync] Found {len(save_files)} save files: {save_files}")
+        
+        for f in save_files:
+            try:
+                mtime = f.stat().st_mtime
+                logging.debug(f"[Sync] {f.name} mtime={mtime}")
+            except Exception as e:
+                logging.debug(f"[Sync] {f.name} stat error: {e}")
+
         new_h = self._get_current_hash(strategy, rom)
         new_m = self._get_max_mtime(strategy, rom)
         
-        if new_h == data.get('initial_hash') and new_m <= data.get('initial_mtime', 0):
+        cached_mtime = self.sync_cache.get(str(rom_id), {}).get("save_mtime")
+        
+        should_sync = False
+        if cached_mtime is None:
+            logging.debug(f"[Sync] No cache entry for {title} → forcing push")
+            should_sync = True
+        else:
+            should_sync = new_m > cached_mtime
+            logging.debug(f"[Sync] cached={cached_mtime} current={new_m} sync={should_sync}")
+
+        if not should_sync and new_h == data.get('initial_hash'):
             self.log_signal.emit(f"💤 No changes in {title}. Skipping sync.")
             self._update_playtime(data)
             return
 
         self.log_signal.emit(f"📤 Changes detected! Syncing...")
         success = self._perform_sync_upload(data)
-        if success: self.session_errors[str(rom_id)] = 0
-        else: self.session_errors[str(rom_id)] = self.session_errors.get(str(rom_id), 0) + 1
+        if success: 
+            self.session_errors[str(rom_id)] = 0
+            # Update cache with current max mtime
+            entry = self.sync_cache.get(str(rom_id), {})
+            entry["save_mtime"] = new_m
+            self.sync_cache[str(rom_id)] = entry
+            self.save_cache()
+        else: 
+            self.session_errors[str(rom_id)] = self.session_errors.get(str(rom_id), 0) + 1
         self._update_playtime(data)
 
     def _perform_sync_upload(self, data):
@@ -190,10 +225,6 @@ class WingosyWatcher(QThread):
 
             if self.client.upload_save(rom_id, str(temp_zip)):
                 self.log_signal.emit(f"✅ Sync Complete for {title}!")
-                latest = self.client.get_latest_save(rom_id)
-                if latest:
-                    self.sync_cache[str(rom_id)] = {"save_updated_at": latest.get("updated_at")}
-                    self.save_cache()
                 return True
             return False
         except Exception as e:
@@ -204,11 +235,29 @@ class WingosyWatcher(QThread):
 
     def _do_mid_session_sync(self, data):
         strategy, rom = data['strategy'], data['game_data']
+        rom_id = data['rom_id']
+        title = data['title']
+        
         new_h = self._get_current_hash(strategy, rom)
-        if new_h and new_h != data.get('last_mid_sync_hash', data.get('initial_hash')):
-            logging.info(f"🔄 Mid-session sync for {data['title']}...")
+        new_m = self._get_max_mtime(strategy, rom)
+        
+        cached_mtime = self.sync_cache.get(str(rom_id), {}).get("save_mtime")
+        
+        should_sync = False
+        if cached_mtime is None:
+            should_sync = True
+        else:
+            should_sync = new_m > cached_mtime
+
+        if should_sync or (new_h and new_h != data.get('last_mid_sync_hash', data.get('initial_hash'))):
+            logging.info(f"🔄 Mid-session changes detected for {title}. Syncing...")
             if self._perform_sync_upload(data):
                 data['last_mid_sync_hash'] = new_h
+                # Update cache
+                entry = self.sync_cache.get(str(rom_id), {})
+                entry["save_mtime"] = new_m
+                self.sync_cache[str(rom_id)] = entry
+                self.save_cache()
 
     def _update_playtime(self, data):
         try:
