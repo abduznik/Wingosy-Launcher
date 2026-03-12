@@ -27,6 +27,8 @@ RETROARCH_PLATFORMS = [
     # Sony
     "psx", "ps1", "playstation", "playstation-1",
     "psp", "playstation-portable",
+    # Microsoft
+    "xbox", "xbox360",
     # Atari
     "atari2600", "atari-2600",
     "atari5200", "atari-5200",

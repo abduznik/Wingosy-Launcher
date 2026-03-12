@@ -48,7 +48,7 @@ if sys.platform == "win32":
         sys.stderr = io.TextIOWrapper(
             sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-VERSION = "0.5.7"
+VERSION = "0.6.0"
 
 def _cleanup_old_mei_folders():
     """Delete stale PyInstaller _MEI temp folders from previous runs."""
@@ -94,13 +94,21 @@ def main():
     
     config = ConfigManager()
     
-    # Attempt login with token first if available
+    # Migrate emulator paths to new emulators.json schema if needed
+    from src.emulators import migrate_old_config
+    migrate_old_config(config)
+    
+    # Set log level from config
+    log_level_str = config.get("log_level", "INFO").upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
+    logging.getLogger().setLevel(log_level)
+    logging.info(f"Log level set to {log_level_str}")
+    
+    # Attempt login with token first if available (loaded from keyring by client)
     client = RomMClient(config.get("host"), config=config)
-    token = config.get("token")
     
     success = False
-    if token:
-        client.token = token
+    if client.token:
         # Verify token by fetching library
         if client.fetch_library():
             success = True
@@ -111,7 +119,6 @@ def main():
         if password:
             success, result = client.login(config.get("username"), password)
             if success:
-                config.set("token", result)
                 # Discard password now that we have a token
                 config.set("password", None)
             else:
@@ -125,12 +132,9 @@ def main():
             config.set("host", data["host"])
             config.set("username", data["username"])
             # Attempt login with new credentials
-            client = RomMClient(data["host"])
+            client = RomMClient(data["host"], config=config)
             success, result = client.login(data["username"], data["password"])
-            if success:
-                config.set("token", result)
-                # DO NOT save password to config.json
-            else:
+            if not success:
                 QMessageBox.critical(None, "Login Failed", result)
                 sys.exit(1)
         else:

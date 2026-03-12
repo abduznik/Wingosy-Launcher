@@ -172,6 +172,9 @@ class DummyRomMClient:
         self.token = "dummy-token"
         return True, self.token
 
+    def logout(self):
+        self.token = None
+
     def get_auth_headers(self):
         return {"Authorization": "Bearer dummy-token"}
 
@@ -245,6 +248,31 @@ class DummyRomMClient:
     def get_firmware(self):
         return []
 
+    def get_rom_details(self, rom_id):
+        return {
+            "id": rom_id,
+            "name": f"Dummy Game {rom_id}",
+            "platform_display_name": "SNES",
+            "igdb_metadata": {"summary": "A long and detailed dummy summary for this game."},
+            "files": [{"file_name": "game.sfc", "file_size_bytes": 1024*1024}]
+        }
+
     def download_firmware(self, fw_item, target_path,
                           progress_cb=None, thread=None):
         return False
+
+    def update_playtime(self, rom_id, seconds):
+        print(f"[DummyClient] Updated playtime for rom_id={rom_id}: {seconds}s")
+        return True
+
+    def list_all_saves(self, rom_id):
+        return []
+
+    def list_all_states(self, rom_id):
+        return []
+
+    def delete_save(self, save_id):
+        return True
+
+    def delete_state(self, state_id):
+        return True

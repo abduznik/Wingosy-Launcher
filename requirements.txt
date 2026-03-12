@@ -1,0 +1,7 @@
+PySide6
+psutil
+requests
+py7zr
+Pillow
+keyring
+cryptography

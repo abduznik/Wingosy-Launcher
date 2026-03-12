@@ -2,6 +2,7 @@ import os
 import sys
 import shutil
 import zipfile
+import logging
 from pathlib import Path
 
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -10,16 +11,21 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMessageBox, QDialog, QLineEdit, QDialogButtonBox, 
                              QScrollArea)
 from PySide6.QtGui import QIcon, QPixmap, QKeySequence, QShortcut
-from PySide6.QtCore import Qt, QSettings, Slot, Signal, QThread, QTimer
+from PySide6.QtCore import Qt, QSettings, Slot, Signal, QThread, QTimer, QEvent, QPoint
 
 from src.ui.threads import (ImageFetcher, BiosDownloader, DolphinDownloader, 
-                            DirectDownloader, GithubDownloader, ConflictResolveThread)
+                            DirectDownloader, GithubDownloader, ConflictResolveThread,
+                            LocalDiscoveryWorker)
 from src.ui.widgets import get_resource_path, DownloadQueueWidget, format_speed
-from src.ui.dialogs import SetupDialog, SettingsDialog, WelcomeDialog, ConflictDialog
+from src.ui.dialogs import SetupDialog, WelcomeDialog, ConflictDialog
+from src.ui.dialogs.emulator_editor import AssetPickerDialog
+from src.emulator_sources import EMULATOR_SOURCES
 from src.ui.tabs.library import LibraryTab
 from src.ui.tabs.emulators import EmulatorsTab
-from src.utils import zip_path
+from src.ui.tabs.settings import SettingsTab
+from src.utils import zip_path, resolve_local_rom_path
 from src.platforms import RETROARCH_PLATFORMS, platform_matches
+from src import emulators
 
 class LibraryFetchWorker(QThread):
     finished = Signal(object)    # emits the final list or "REAUTH_REQUIRED"
@@ -34,18 +40,7 @@ class LibraryFetchWorker(QThread):
 
     def run(self):
         def _on_page(batch, total):
-            # Pre-calculate local ROM existence for this batch
-            base_rom = self.client.config.get("base_rom_path")
-            if base_rom:
-                base_path = Path(base_rom)
-                for g in batch:
-                    rom_name = g.get('fs_name')
-                    platform = g.get('platform_slug')
-                    exists = False
-                    if rom_name:
-                        if (base_path / platform / rom_name).exists() or (base_path / rom_name).exists():
-                            exists = True
-                    g['_local_exists'] = exists
+            # Just emit the batch, discovery happens in background later
             self.batch_ready.emit(batch, total)
 
         try:
@@ -63,6 +58,8 @@ class LibraryFetchWorker(QThread):
         # Final result emission (used for final cache and cleanup)
         self.finished.emit(result)
 
+from src.ui.title_bar import WingosyTitleBar
+
 class WingosyMainWindow(QMainWindow):
     def __init__(self, config_manager, client, watcher_class, version):
         super().__init__()
@@ -73,9 +70,15 @@ class WingosyMainWindow(QMainWindow):
         self.active_image_fetchers = []
         self.fetch_generation = 0
         self.all_games = []
+        
+        # Custom window frame setup
+        self.setWindowFlags(Qt.Window)
+
+        # After window is shown, call Windows API to remove title bar but keep resize border
+        QTimer.singleShot(0, self._apply_windows_frame)
+
         self.setWindowTitle("Wingosy Launcher")
         self.resize(1100, 800)
-        
         settings = QSettings("Wingosy", "WingosyLauncher")
         geometry = settings.value("geometry")
         if geometry:
@@ -88,55 +91,170 @@ class WingosyMainWindow(QMainWindow):
         self.setup_ui()
         self.setup_tray()
         self.ensure_watcher_running()
-        
+
+        # 1. Load cache immediately — show games NOW
+        self._load_library_from_cache()
+        # 2. Then fetch fresh data in background
+        QTimer.singleShot(500, self.fetch_library_and_populate)
+
+        if self.config.data.get("keyring_failed"):
+            QMessageBox.warning(
+                self,
+                "Credential Storage Warning",
+                "Your system's secure credential manager is unavailable.\n\n"
+                "Wingosy has stored your login token using local encryption instead.\n\n"
+                "This is less secure than keyring. Consider enabling your OS keyring."
+            )
+            self.config.data.pop("keyring_failed", None)
+
         if self.config.get("first_run", True):
             WelcomeDialog(self).exec()
             self.config.set("first_run", False)
 
     def setup_ui(self):
         central_widget = QWidget()
+        central_widget.setObjectName("centralWidget")
+        central_widget.setStyleSheet("#centralWidget { background: #1a1a1a; border-radius: 10px; border: 1px solid #333; }")
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom Title Bar
+        self.title_bar = WingosyTitleBar(self)
+        self.title_bar.tab_changed.connect(self._on_tab_changed)
+        main_layout.addWidget(self.title_bar)
         
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("<h1 style='color: #1e88e5;'>Wingosy Launcher</h1>"))
-        header_layout.addStretch()
-        
-        self.settings_btn = QPushButton("⚙️ Settings")
-        self.settings_btn.clicked.connect(self.open_settings)
-        header_layout.addWidget(self.settings_btn)
-        main_layout.addLayout(header_layout)
+        # Update connection status
+        host = self.config.get("host", "")
+        self.title_bar.update_connection_status("connected" if self.client.token else "disconnected", host)
 
         self.tabs = QTabWidget()
+        self.tabs.tabBar().hide() # Hide default tab bar
         self.tabs.setStyleSheet("""
-            QTabBar::tab { background: #2d2d2d; color: white; padding: 10px; }
-            QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #1e88e5; }
+            QTabWidget::pane { border: none; background: #1a1a1a; }
         """)
-        
+
         self.library_tab = LibraryTab(self)
-        self.tabs.addTab(self.library_tab, "🎮 Library")
-        
+        self.tabs.addTab(self.library_tab, "Library")
+
         self.emulators_tab = EmulatorsTab(self)
-        self.tabs.addTab(self.emulators_tab, "🛠️ Emulators")
-        
+        self.tabs.addTab(self.emulators_tab, "Emulators")
+
         # Logs & Downloads Tab
         self.info_tabs = QTabWidget()
+        self.info_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: none;
+                background: #1a1a1a;
+            }
+            QTabWidget > QTabBar {
+                background: #1a1a1a;
+                border-bottom: 1px solid #2d2d2d;
+            }
+            QTabBar::tab {
+                background: transparent;
+                color: #aaaaaa;
+                font-size: 11px;
+                padding: 8px 20px;
+                border: none;
+                border-bottom: 2px solid transparent;
+                min-width: 80px;
+            }
+            QTabBar::tab:selected {
+                color: #ffffff;
+                border-bottom: 2px solid #0d6efd;
+                background: transparent;
+            }
+            QTabBar::tab:hover {
+                color: #dddddd;
+                background: rgba(255,255,255,0.04);
+            }
+            QTabBar::scroller {
+                width: 0px;
+            }
+        """)
         self.download_queue = DownloadQueueWidget()
-        self.info_tabs.addTab(self.download_queue, "📥 Downloads")
-        
+        self.download_queue.refresh_from_registry()
+        self.info_tabs.addTab(self.download_queue, "📥 Downloads")        
+
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setStyleSheet("background: #121212; color: #bbdefb; font-family: Consolas;")
-        self.info_tabs.addTab(self.log_area, "📝 Logs")
+        self.log_area.setStyleSheet("background: #121212; color: #bbdefb; font-family: Consolas; border: none;")
+        self.info_tabs.addTab(self.log_area, "📋 Logs")
+
+        self.tabs.addTab(self.info_tabs, "Logs")
         
-        self.tabs.addTab(self.info_tabs, "📊 info")
+        self.settings_tab = SettingsTab(self)
+        self.tabs.addTab(self.settings_tab, "Settings")
+        
         main_layout.addWidget(self.tabs)
         
         # Shortcuts
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.library_tab.search_input.setFocus)
         QShortcut(QKeySequence("F5"), self, activated=self.fetch_library_and_populate)
+
+    def _on_tab_changed(self, index):
+        self.tabs.setCurrentIndex(index)
+        self.title_bar.set_active_tab(index)
+
+    def eventFilter(self, obj, event):
+        return super().eventFilter(obj, event)
+
+    def _load_library_from_cache(self):
+        """Load library_cache.json synchronously on startup for instant display."""
+        import json
+        cache_path = Path.home() / ".wingosy" / "library_cache.json"
+        if not cache_path.exists():
+            return
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Validate — must be a list of dicts
+            if not isinstance(data, list):
+                logging.warning("[Library] Cache invalid format — skipping")
+                return
+
+            # Filter out any non-dict entries
+            games = [g for g in data if isinstance(g, dict)]
+
+            if not games:
+                logging.warning("[Library] Cache empty or all entries invalid")
+                return
+
+            self.all_games = games
+            self._update_platform_filter(games)
+            self.library_tab.populate_games(
+                games,
+                status=f"📚 Loaded from cache ({len(games)} games)"
+            )
+            logging.info(f"[Library] Cache loaded: {len(games)} games")
+            
+            # Start background discovery
+            self._start_local_discovery(games)
+        except Exception as e:
+            logging.warning(f"[Library] Cache load failed: {e}")
+
+    def _start_local_discovery(self, games):
+        if hasattr(self, '_discovery_worker') and self._discovery_worker.isRunning():
+            self._discovery_worker.stop()
+            self._discovery_worker.wait()
         
-        self.fetch_library_and_populate()
+        self._discovery_worker = LocalDiscoveryWorker(games, self.config.data)
+        self._discovery_worker.rom_discovered.connect(self._on_rom_discovered)
+        self._discovery_worker.start()
+
+    @Slot(int, str)
+    def _on_rom_discovered(self, game_id, local_path):
+        # Update flag in main list
+        for g in self.all_games:
+            if g.get('id') == game_id:
+                g['_local_exists'] = True
+                break
+        
+        # Update UI if library tab is showing this game
+        self.library_tab.update_game_local_status(game_id, True)
 
     def _on_image_fetched(self, fetcher, generation=None):
         if generation is not None and generation != self.fetch_generation:
@@ -163,8 +281,9 @@ class WingosyMainWindow(QMainWindow):
         
         if not force_refresh:
             # Step A — Load from cache immediately
-            cached = self.config.get("cached_library", [])
+            cached, _ = self.client.load_library_cache()
             if cached:
+                cached = [g for g in cached if isinstance(g, dict)]
                 self.all_games = cached
                 # Ensure platform filter is updated for cached games (saves/restores current)
                 self._update_platform_filter(cached)
@@ -182,7 +301,7 @@ class WingosyMainWindow(QMainWindow):
         self.library_tab.set_status("Connecting to RomM server...")
 
         # Step C — Start worker
-        cached_non_empty = len(self.config.get("cached_library", [])) > 0
+        cached_non_empty = len(self.all_games) > 0
         self._fetch_thread = LibraryFetchWorker(self.client, cached_non_empty=cached_non_empty)
         self._fetch_thread.finished.connect(self._on_library_fetched)
         self._fetch_thread.error.connect(lambda: self.library_tab.set_status("Could not connect to RomM server. Check your settings.", color="#b71c1c"))
@@ -203,7 +322,11 @@ class WingosyMainWindow(QMainWindow):
         is_first_batch = (len(self.all_games) == 0 or len(self.all_games) == len(batch))
         
         if is_first_batch:
+            already_found = {g['id'] for g in self.all_games if g.get('_local_exists')}
             self.all_games = list(batch)
+            for g in self.all_games:
+                if g['id'] in already_found:
+                    g['_local_exists'] = True
             self.library_tab.populate_grid(self.all_games)
         else:
             # Append subsequent batches
@@ -221,7 +344,7 @@ class WingosyMainWindow(QMainWindow):
         if res == "REAUTH_REQUIRED":
             QMessageBox.warning(self, "Session Expired", 
                 "Your session has expired. Please log in again.")
-            self.open_settings()
+            self._on_tab_changed(3) # Settings
             return
         
         if res is None:
@@ -235,10 +358,16 @@ class WingosyMainWindow(QMainWindow):
         
         self.log(f"✅ Library fully loaded: {len(res)} games")
         # Ensure final state is correct (in case batches arrived out of order or were incomplete)
+        already_found = {g['id'] for g in self.all_games if g.get('_local_exists')}
         self.all_games = res
+        for g in self.all_games:
+            if g['id'] in already_found:
+                g['_local_exists'] = True
+
         self._update_platform_filter(res)
         # Final render to ensure everything is in place
         self.library_tab.apply_filters()
+        self._start_local_discovery(self.all_games)
 
     def _update_platform_filter(self, games):
         platforms = sorted(set(
@@ -252,9 +381,10 @@ class WingosyMainWindow(QMainWindow):
         self.library_tab.platform_filter.addItems(platforms)
         
         # Add No Emulator filter if needed
-        all_known = set(RETROARCH_PLATFORMS)
-        for emu in self.config.get("emulators", {}).values():
-            all_known.update(emu.get("platform_slugs", [emu.get("platform_slug", "")]))
+        all_known = set()
+        for emu in emulators.load_emulators():
+            all_known.update(emu.get("platform_slugs", []))
+            
         has_unknown = any(g.get("platform_slug") not in all_known for g in games)
         if has_unknown:
             self.library_tab.platform_filter.addItem("⚠️ No Emulator")
@@ -294,8 +424,11 @@ class WingosyMainWindow(QMainWindow):
     def open_fw(self, emu_name):
         # Local import to avoid circular dependency with dialogs.py
         from src.ui.dialogs import GameDetailDialog 
-        emu_data = self.config.get("emulators").get(emu_name)
-        slug = emu_data.get("platform_slug")
+        all_emus = emulators.load_emulators()
+        emu_data = next((e for e in all_emus if e["name"] == emu_name), None)
+        if not emu_data: return
+        
+        slugs = emu_data.get("platform_slugs", [])
         dialog = QDialog(self)
         dialog.setWindowTitle(f"{emu_name} BIOS / Firmware")
         dialog.resize(600, 500)
@@ -303,7 +436,9 @@ class WingosyMainWindow(QMainWindow):
         
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search Library:"))
-        self.fw_search_input = QLineEdit(slug if slug != "multi" else "bios")
+        # Use first slug as default search, or 'bios'
+        default_term = slugs[0] if slugs and slugs[0] != "multi" else "bios"
+        self.fw_search_input = QLineEdit(default_term)
         search_layout.addWidget(self.fw_search_input)
         search_btn = QPushButton("Search")
         search_layout.addWidget(search_btn)
@@ -371,20 +506,24 @@ class WingosyMainWindow(QMainWindow):
         layout.addWidget(button_box)
         dialog.exec()
 
-    def dl_fw_list(self, emu, fw_list, dialog):
+    def dl_fw_list(self, emu_name, fw_list, dialog):
         count = 0
         for fw in fw_list:
-            if self.start_fw_download(emu, fw): count += 1
+            if self.start_fw_download(emu_name, fw): count += 1
         self.log(f"✨ BIOS Sync: {count} downloads started.")
         dialog.accept()
 
-    def dl_fw(self, emu, fw, dialog):
-        if self.start_fw_download(emu, fw): dialog.accept()
+    def dl_fw(self, emu_name, fw, dialog):
+        if self.start_fw_download(emu_name, fw): dialog.accept()
 
-    def start_fw_download(self, emu, fw):
+    def start_fw_download(self, emu_name, fw):
         try:
-            emu_path = self.config.get("emulators")[emu].get("path")
-            emu_folder = self.config.get("emulators")[emu].get("folder", emu)
+            all_emus = emulators.load_emulators()
+            emu_data = next((e for e in all_emus if e["name"] == emu_name), None)
+            if not emu_data: return False
+
+            emu_path = emu_data.get("executable_path")
+            emu_folder = emu_data.get("id")
             suggested = Path(emu_path).parent / "bios" if emu_path else Path(self.config.get("base_emu_path")) / emu_folder / "bios"
             os.makedirs(suggested, exist_ok=True)
             target_path = suggested / fw['file_name']
@@ -392,7 +531,7 @@ class WingosyMainWindow(QMainWindow):
             fw_dl = BiosDownloader(self.client, fw, str(target_path))
             self.download_queue.add_download(f"BIOS: {fw['file_name']}", fw_dl)
             
-            fw_dl.progress.connect(lambda p, s: self.log(f"DL BIOS: {p}% @ {format_speed(s)}"))
+            fw_dl.progress.connect(lambda d, t, s: self.log(f"DL BIOS: {100*d/t if t > 0 else 0:.1f}% @ {format_speed(s)}"))
             fw_dl.finished.connect(lambda ok, p: self.log(f"✨ BIOS saved to {p}") if ok else self.log(f"❌ BIOS failed: {p}"))
             fw_dl.finished.connect(lambda: self.download_queue.remove_download(fw_dl))
             fw_dl.finished.connect(lambda t=fw_dl: self.active_threads.remove(t) if t in self.active_threads else None)
@@ -405,72 +544,189 @@ class WingosyMainWindow(QMainWindow):
 
     def dl_emu(self, name):
         try:
-            emu_data = self.config.get("emulators")[name]
-            url, repo = emu_data.get("url"), emu_data.get("github")
-            target_dir = Path(self.config.get("base_emu_path")) / emu_data.get("folder")
+            all_emus = emulators.load_emulators()
+            emu = next((e for e in all_emus if e["name"] == name), None)
+            if not emu: return
+
+            source = EMULATOR_SOURCES.get(emu["id"])
+            if not source:
+                self.log(f"❌ No download source configured for {name}")
+                return
+
+            self.log(f"[Debug] dl_emu called for: {name}, id: {emu['id']}, source type: {source['type']}")
+
+            emu_folder = emu.get("folder", emu["id"])
+            base_emu_dir = Path(self.config.get("base_emu_path") or Path.home() / ".wingosy" / "emulators")
+            target_dir = base_emu_dir / emu_folder
             os.makedirs(target_dir, exist_ok=True)
-            self.log(f"🚀 Downloading {name}...")
-            if emu_data.get("dolphin_latest", False): dl_thread = DolphinDownloader(str(target_dir))
-            elif url: dl_thread = DirectDownloader(url, str(target_dir))
-            elif repo: 
-                required = emu_data.get("asset_keywords_required")
-                excluded = emu_data.get("asset_keywords_exclude")
-                dl_thread = GithubDownloader(repo, str(target_dir), required, excluded)
-            else: return
-            
-            self.download_queue.add_download(name, dl_thread)
-            dl_thread.progress.connect(lambda p, s: self.log(f"DL {name}: {p}% @ {format_speed(s)}"))
-            dl_thread.finished.connect(lambda ok, p: self.post_dl_emu(name, ok, p, dl_thread))
-            dl_thread.finished.connect(lambda: self.download_queue.remove_download(dl_thread))
-            dl_thread.finished.connect(lambda t=dl_thread: self.active_threads.remove(t) if t in self.active_threads else None)
-            self.active_threads.append(dl_thread)
-            dl_thread.start()
+
+            def start_download(url, asset_name=None):
+                t = DirectDownloader(url, str(target_dir))
+                display_name = f"{name} ({asset_name})" if asset_name else name
+                self.download_queue.add_download(f"Emulator: {display_name}", t)
+                t.progress.connect(lambda d, t_bytes, s: self.log(f"DL {name}: {100*d/t_bytes if t_bytes > 0 else 0:.1f}% @ {format_speed(s)}"))
+                
+                def on_finished(ok, path, e_data=emu, e_name=name, e_dir=target_dir, thread=t, s_cfg=source):
+                    if ok:
+                        if path.lower().endswith(('.zip', '.7z')):
+                            self.log(f"📦 Extracting {e_name}...")
+                            from src.ui.threads import ExtractionThread
+                            et = ExtractionThread(path, e_dir)
+                            
+                            def on_extracted(success, msg=None, e_data=e_data, e_name=e_name, e_dir=e_dir, p=path, s_cfg=s_cfg):
+                                if success:
+                                    try: os.remove(p)
+                                    except: pass
+                                    finalize_emu(e_data, e_name, e_dir, s_cfg)
+                                else:
+                                    self.log(f"❌ Extraction failed for {e_name}: {msg}")
+
+                            et.finished.connect(lambda: on_extracted(True))
+                            et.error.connect(lambda msg: on_extracted(False, msg))
+                            self.active_threads.append(et)
+                            et.start()
+                        else:
+                            finalize_emu(e_data, e_name, e_dir, s_cfg)
+                    else:
+                        self.log(f"❌ Failed to download {e_name}: {path}")
+                    
+                    self.download_queue.remove_download(thread)
+                    if thread in self.active_threads: self.active_threads.remove(thread)
+
+                def finalize_emu(e_data, e_name, e_dir, s_cfg):
+                    # 1. Try exe_hint first
+                    hint = s_cfg.get("exe_hint")
+                    exe_path = None
+                    if hint:
+                        for p in Path(e_dir).rglob(hint):
+                            exe_path = str(p)
+                            break
+                    
+                    # 2. Fall back to largest .exe
+                    if not exe_path:
+                        max_size = -1
+                        for p in Path(e_dir).rglob("*.exe"):
+                            size = p.stat().st_size
+                            if size > max_size:
+                                    max_size = size
+                                    exe_path = str(p)
+                    
+                    if exe_path:
+                        e_data["executable_path"] = exe_path
+                        emulators.save_emulators(all_emus)
+                        self.log(f"✅ {e_name} downloaded and configured.")
+                        self.emulators_tab.populate_emus()
+                    else:
+                        self.log(f"⚠ {e_name} downloaded, but no .exe found in {e_dir}")
+
+                t.finished.connect(on_finished)
+                self.active_threads.append(t)
+                t.start()
+
+            if source["type"] == "github":
+                # Fetch assets from GitHub
+                import requests
+                repo = source["repo"]
+                self.log(f"🔍 Fetching latest releases for {name}...")
+                api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+                headers = {'User-Agent': 'WingosyLauncher'}
+                verify = os.environ.get('REQUESTS_CA_BUNDLE', True)
+                
+                try:
+                    resp = requests.get(api_url, timeout=15, headers=headers, verify=verify)
+                    self.log(f"[Debug] GitHub API response: {resp.status_code} for {repo}")
+                except Exception as ex:
+                    self.log(f"❌ GitHub API request failed: {ex}")
+                    return
+
+                if resp.status_code != 200:
+                    self.log(f"❌ Failed to fetch GitHub releases for {name}")
+                    return
+                
+                assets = resp.json().get("assets", [])
+                filters = source.get("asset_filters", {})
+                req_k = filters.get("required", [])
+                exc_k = filters.get("excluded", [])
+                
+                valid_assets = []
+                for a in assets:
+                    aname = a["name"].lower()
+                    if not any(aname.endswith(ext) for ext in [".zip", ".7z"]): continue
+                    if any(x in aname for x in exc_k): continue
+                    if all(k in aname for k in req_k):
+                        valid_assets.append(a)
+                
+                if not valid_assets:
+                    self.log(f"❌ No suitable Windows assets found for {name}")
+                    return
+                
+                if len(valid_assets) == 1:
+                    start_download(valid_assets[0]["browser_download_url"], valid_assets[0]["name"])
+                else:
+                    self.picker = AssetPickerDialog(name, valid_assets, self)
+                    self.picker.asset_selected.connect(lambda n, u: start_download(u, n))
+                    self.picker.show()
+
+            elif source["type"] == "direct":
+                start_download(source["url"])
+
+            elif source["type"] == "dolphin_api":
+                # specialized downloader
+                t = DolphinDownloader(str(target_dir))
+                self.download_queue.add_download(f"Emulator: {name}", t)
+                t.progress.connect(lambda d, t_bytes, s: self.log(f"DL {name}: {100*d/t_bytes if t_bytes > 0 else 0:.1f}% @ {format_speed(s)}"))
+                
+                def on_finished_dolphin(ok, path, e_data=emu, e_name=name, e_dir=target_dir, thread=t, s_cfg=source):
+                    if ok:
+                        if path.lower().endswith(('.zip', '.7z')):
+                            self.log(f"📦 Extracting {e_name}...")
+                            from src.ui.threads import ExtractionThread
+                            et = ExtractionThread(path, e_dir)
+                            
+                            def on_extracted_dolphin(success, msg=None, e_data=e_data, e_name=e_name, e_dir=e_dir, p=path, s_cfg=s_cfg):
+                                if success:
+                                    try: os.remove(p)
+                                    except: pass
+                                    finalize_emu(e_data, e_name, e_dir, s_cfg)
+                                else:
+                                    self.log(f"❌ Extraction failed for {e_name}: {msg}")
+
+                            et.finished.connect(lambda: on_extracted_dolphin(True))
+                            et.error.connect(lambda msg: on_extracted_dolphin(False, msg))
+                            self.active_threads.append(et)
+                            et.start()
+                        else:
+                            finalize_emu(e_data, e_name, e_dir, s_cfg)
+                    else:
+                        self.log(f"❌ Failed to download {e_name}: {path}")
+                    self.download_queue.remove_download(thread)
+                    if thread in self.active_threads: self.active_threads.remove(thread)
+
+                t.finished.connect(on_finished_dolphin)
+                self.active_threads.append(t)
+                t.start()
+
         except Exception as e:
             self.log(f"❌ Error starting emulator download: {e}")
 
-    def post_dl_emu(self, name, ok, path, thread):
-        if ok:
-            self.log(f"✨ {name} ready at {path}")
-            emu_data = self.config.get("emulators")[name]
-            exe_name = emu_data['exe']
-            for root, dirs, files in os.walk(path):
-                if exe_name in files:
-                    full_path = os.path.join(root, exe_name)
-                    emu_data['path'] = full_path
-                    self.config.set("emulators", self.config.get("emulators"))
-                    self.emulators_tab.populate_emus()
-                    self.log(f"📍 Path: {full_path}")
-                    trigger = emu_data.get("portable_trigger")
-                    if trigger:
-                        trigger_path = Path(root) / trigger
-                        if not trigger_path.exists():
-                            if '.' in trigger: trigger_path.write_text("")
-                            else: trigger_path.mkdir(exist_ok=True)
-                            self.log(f"📁 Portable mode enabled ({trigger})")
-                    break
-        else: self.log(f"❌ {path}")
+
 
     def st_ep(self, name):
-        path, _ = QFileDialog.getOpenFileName(self, f"Select {name}.exe", filter="Executables (*.exe)")
-        if path:
-            emus = self.config.get("emulators")
-            emus[name]["path"] = path
-            self.config.set("emulators", emus)
-            self.emulators_tab.populate_emus()
+        # This is now handled in EmulatorsTab.edit_emulator_path
+        pass
 
     @Slot(str, str)
     def on_path(self, name, path):
-        emus = self.config.get("emulators")
+        all_emus = emulators.load_emulators()
         updated = False
-        for disp_name, data in emus.items():
-            if data['exe'].lower() == name.lower() or name.lower() in disp_name.lower():
-                data['path'] = path
+        for emu in all_emus:
+            if name.lower() in emu['name'].lower():
+                emu['executable_path'] = path
                 updated = True
                 break
         if updated:
-            self.config.set("emulators", emus)
+            emulators.save_emulators(all_emus)
             self.emulators_tab.populate_emus()
-
     def sy_ec(self, name, mode):
         try:
             emu_data = self.config.get("emulators")[name]
@@ -508,43 +764,48 @@ class WingosyMainWindow(QMainWindow):
 
     @Slot(str, str, str, str)
     def handle_conflict(self, title, local_path, temp_dl, rom_id):
-        dialog = ConflictDialog(title, self)
-        if dialog.exec() == QDialog.Accepted:
-            mode = dialog.result_mode
-            # Only skip next pull if user explicitly chose to keep their local file
-            if mode == "local":
-                print(f"[PULL DEBUG] User chose Keep Local. Setting skip_next_pull for {rom_id}")
-                self.watcher.skip_next_pull_rom_id = str(rom_id)
-            else:
-                self.watcher.skip_next_pull_rom_id = None
+        try:
+            dialog = ConflictDialog(title, self)
+            if dialog.exec() == QDialog.Accepted:
+                mode = dialog.result_mode
+                # Only skip next pull if user explicitly chose to keep their local file
+                if mode == "local":
+                    print(f"[PULL DEBUG] User chose Keep Local. Setting skip_next_pull for {rom_id}")
+                    self.watcher.skip_next_pull_rom_id = str(rom_id)
+                else:
+                    self.watcher.skip_next_pull_rom_id = None
 
-            # Always clear it after 30 seconds max to prevent it sticking forever
-            QTimer.singleShot(30000, lambda: setattr(
-                self.watcher, 'skip_next_pull_rom_id', None))
+                # Always clear it after 30 seconds max to prevent it sticking forever
+                QTimer.singleShot(30000, lambda: setattr(
+                    self.watcher, 'skip_next_pull_rom_id', None))
 
-            if mode == "cloud":
-                t = ConflictResolveThread(self.watcher, rom_id, title, local_path, os.path.isdir(local_path))
-                t.finished.connect(lambda ok: self.log("✅ Cloud save applied." if ok else "❌ Cloud save apply failed."))
-                t.finished.connect(lambda t=t: self.active_threads.remove(t) if t in self.active_threads else None)
-                self.active_threads.append(t)
-                t.start()
-            elif mode == "both":
-                cloud_bak = str(local_path) + ".cloud_backup"
-                if os.path.exists(cloud_bak):
-                    if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak, ignore_errors=True)
-                    else: os.remove(cloud_bak)
-                shutil.copy2(temp_dl, cloud_bak) if not os.path.isdir(temp_dl) else shutil.copytree(temp_dl, cloud_bak)
-                self.log(f"📁 Cloud save backed up to: {cloud_bak}")
-        if os.path.exists(temp_dl):
-            try: os.remove(temp_dl) if not os.path.isdir(temp_dl) else shutil.rmtree(temp_dl, ignore_errors=True)
-            except: pass
+                if mode == "cloud":
+                    t = ConflictResolveThread(self.watcher, rom_id, title, local_path, os.path.isdir(local_path))
+                    t.finished.connect(lambda ok: self.log("✅ Cloud save applied." if ok else "❌ Cloud save apply failed."))
+                    t.finished.connect(lambda t=t: self.active_threads.remove(t) if t in self.active_threads else None)
+                    self.active_threads.append(t)
+                    t.start()
+                elif mode == "both":
+                    cloud_bak = str(local_path) + ".cloud_backup"
+                    if os.path.exists(cloud_bak):
+                        if os.path.isdir(cloud_bak): shutil.rmtree(cloud_bak, ignore_errors=True)
+                        else: os.remove(cloud_bak)
+                    shutil.copy2(temp_dl, cloud_bak) if not os.path.isdir(temp_dl) else shutil.copytree(temp_dl, cloud_bak)
+                    self.log(f"📁 Cloud save backed up to: {cloud_bak}")
+            
+            if os.path.exists(temp_dl):
+                try: os.remove(temp_dl) if not os.path.isdir(temp_dl) else shutil.rmtree(temp_dl, ignore_errors=True)
+                except: pass
+        finally:
+            if self.watcher:
+                self.watcher._active_conflicts.discard(str(rom_id))
 
     @Slot(str, str)
     def show_notification(self, title, msg):
         self.tray_icon.showMessage(title, msg, QSystemTrayIcon.Information, 3000)
 
     def open_settings(self):
-        SettingsDialog(self.config, self, self).exec()
+        self._on_tab_changed(3)
 
     def ensure_watcher_running(self):
         if not self.watcher:
@@ -584,3 +845,200 @@ class WingosyMainWindow(QMainWindow):
             event.ignore()
         else:
             event.accept()
+
+    def _apply_windows_frame(self):
+        import sys
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+            
+            hwnd = int(self.winId())
+            
+            # MARGINS struct — extend frame into client area on all sides by 1px
+            # This removes title bar but keeps the resize border and snap behavior
+            class MARGINS(ctypes.Structure):
+                _fields_ = [
+                    ("cxLeftWidth",    ctypes.c_int),
+                    ("cxRightWidth",   ctypes.c_int),
+                    ("cyTopHeight",    ctypes.c_int),
+                    ("cyBottomHeight", ctypes.c_int),
+                ]
+            
+            margins = MARGINS(1, 1, 1, 1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(
+                hwnd, ctypes.byref(margins))
+            
+            # Remove WS_CAPTION but keep WS_THICKFRAME for resize
+            GWL_STYLE = -16
+            WS_CAPTION     = 0x00C00000
+            WS_THICKFRAME  = 0x00040000
+            WS_SYSMENU     = 0x00080000
+            WS_MAXIMIZEBOX = 0x00010000
+            WS_MINIMIZEBOX = 0x00020000
+            
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+            # Remove caption, keep thick frame
+            style = style & ~WS_CAPTION
+            style = style | WS_THICKFRAME
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
+            
+            # Force Windows to redraw the frame
+            SWP_FLAGS = (0x0020 |  # SWP_FRAMECHANGED
+                         0x0002 |  # SWP_NOMOVE
+                         0x0001 |  # SWP_NOSIZE
+                         0x0004)   # SWP_NOZORDER
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS)
+                
+        except Exception as e:
+            logging.warning(f"[Frame] Windows frame setup failed: {e}")
+
+    def _get_drag_rect(self):
+        """Returns the screen rect of the draggable center area of the title bar."""
+        try:
+            tb = self.title_bar
+            # Drag zone is between status_text and lib_btn
+            left_widget = tb.status_text
+            right_widget = tb.nav_buttons[0] if tb.nav_buttons else tb.settings_btn
+            
+            left_x = left_widget.mapToGlobal(left_widget.rect().bottomRight()).x()
+            right_x = right_widget.mapToGlobal(right_widget.rect().bottomLeft()).x()
+            
+            top_y = tb.mapToGlobal(tb.rect().topLeft()).y()
+            bot_y = tb.mapToGlobal(tb.rect().bottomLeft()).y()
+            
+            return left_x, right_x, top_y, bot_y
+        except Exception:
+            return None
+
+    def nativeEvent(self, eventType, message):
+        import sys
+        if sys.platform != "win32":
+            return super().nativeEvent(eventType, message)
+
+        import ctypes
+        import ctypes.wintypes as wintypes
+
+        if eventType != b"windows_generic_MSG":
+            return super().nativeEvent(eventType, message)
+
+        msg = ctypes.wintypes.MSG.from_address(int(message))
+
+        WM_NCCALCSIZE    = 0x0083
+        WM_NCHITTEST     = 0x0084
+        WM_GETMINMAXINFO = 0x0024
+
+        if msg.message == WM_GETMINMAXINFO:
+            # Constrain the maximized window to the work area so it never covers the taskbar
+            try:
+                hwnd = int(self.winId())
+                MONITOR_DEFAULTTONEAREST = 2
+                monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+
+                class _RECT(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+                class _MONITORINFO(ctypes.Structure):
+                    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT),
+                                 ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+
+                mi = _MONITORINFO()
+                mi.cbSize = ctypes.sizeof(mi)
+                ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(mi))
+
+                class _POINT(ctypes.Structure):
+                    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+                class _MINMAXINFO(ctypes.Structure):
+                    _fields_ = [("ptReserved", _POINT), ("ptMaxSize", _POINT),
+                                 ("ptMaxPosition", _POINT), ("ptMinTrackSize", _POINT),
+                                 ("ptMaxTrackSize", _POINT)]
+
+                mmi = _MINMAXINFO.from_address(msg.lParam)
+                w = mi.rcWork.right - mi.rcWork.left
+                h = mi.rcWork.bottom - mi.rcWork.top
+                mmi.ptMaxSize.x = w
+                mmi.ptMaxSize.y = h
+                mmi.ptMaxPosition.x = mi.rcWork.left
+                mmi.ptMaxPosition.y = mi.rcWork.top
+                mmi.ptMaxTrackSize.x = w
+                mmi.ptMaxTrackSize.y = h
+                return True, 0
+            except Exception:
+                pass
+
+        if msg.message == WM_NCCALCSIZE:
+            if msg.wParam == 1:
+                return True, 0
+            return False, 0
+        
+        if msg.message == WM_NCHITTEST:
+            # Screen coordinates from lParam
+            x = ctypes.c_int16(msg.lParam & 0xFFFF).value
+            y = ctypes.c_int16((msg.lParam >> 16) & 0xFFFF).value
+            
+            rect = wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(int(self.winId()), ctypes.byref(rect))
+            
+            # Use device pixels for border — fall back to Qt's ratio if Win API unavailable
+            try:
+                dpi = ctypes.windll.user32.GetDpiForWindow(int(self.winId()))
+                scale = dpi / 96.0
+            except Exception:
+                scale = self.devicePixelRatioF()
+            
+            b = max(4, int(8 * scale))
+            
+            # Clamp to window bounds first
+            if (x < rect.left or x > rect.right or y < rect.top or y > rect.bottom):
+                return False, 0
+            
+            dist_left   = x - rect.left
+            dist_right  = rect.right  - x
+            dist_top    = y - rect.top
+            dist_bottom = rect.bottom - y
+            
+            if not self.isMaximized():
+                on_left   = dist_left   <= b
+                on_right  = dist_right  <= b
+                on_top    = dist_top    <= b
+                on_bottom = dist_bottom <= b
+                
+                HTTOPLEFT     = 13
+                HTTOPRIGHT    = 14
+                HTBOTTOMLEFT  = 16
+                HTBOTTOMRIGHT = 17
+                HTTOP         = 12
+                HTBOTTOM      = 15
+                HTLEFT        = 10
+                HTRIGHT       = 11
+                
+                if on_top and on_left: return True, HTTOPLEFT
+                if on_top and on_right: return True, HTTOPRIGHT
+                if on_bottom and on_left: return True, HTBOTTOMLEFT
+                if on_bottom and on_right: return True, HTBOTTOMRIGHT
+                if on_top: return True, HTTOP
+                if on_bottom: return True, HTBOTTOM
+                if on_left: return True, HTLEFT
+                if on_right: return True, HTRIGHT
+            
+            # Title bar area hit testing
+            title_height = int(40 * scale)
+            if dist_top <= title_height:
+                drag_rect = self._get_drag_rect()
+                if drag_rect:
+                    left_x, right_x, top_y, bot_y = drag_rect
+                    if left_x <= x <= right_x and top_y <= y <= bot_y:
+                        return True, 2 # HTCAPTION
+                else:
+                    # Fallback
+                    if (x - rect.left) < (rect.right - rect.left) * 0.4:
+                        return True, 2 # HTCAPTION
+                
+                return True, 1 # HTCLIENT
+            
+            return True, 1 # HTCLIENT
+        
+        return super().nativeEvent(eventType, message)

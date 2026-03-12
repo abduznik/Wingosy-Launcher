@@ -6,6 +6,12 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
+import logging
+
+try:
+    import keyring
+except ImportError:
+    keyring = None
 
 def _get_certifi_path():
     """Get certifi CA bundle path, handling PyInstaller."""
@@ -29,23 +35,44 @@ class RomMClient:
     def __init__(self, host, config=None):
         self.host = host.rstrip('/')
         self.config = config
-        self.token = None
+        self.token = self._load_token()
         self.user_games = []
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         self.library_cache_path = Path.home() / ".wingosy" / "library_cache.json"
 
+    def _load_token(self):
+        """Retrieve token via config manager (keyring with encrypted fallback)."""
+        if self.config:
+            return self.config.load_token()
+        
+        # Fallback for when config is not available (rare)
+        if keyring:
+            try:
+                return keyring.get_password("wingosy", "auth_token")
+            except Exception as e:
+                logging.warning(f"Keyring retrieval error: {e}")
+        return None
+
+    def logout(self):
+        """Clear the auth token from memory and secure storage."""
+        self.token = None
+        if self.config:
+            self.config.delete_token()
+        elif keyring:
+            try:
+                keyring.delete_password("wingosy", "auth_token")
+                logging.info("Logged out: removed token from keyring")
+            except Exception as e:
+                logging.warning(f"Failed to remove token from keyring: {e}")
+
     def save_library_cache(self, games):
         """Save fetched library to disk for instant startup next time."""
         try:
             self.library_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_data = {
-                "timestamp": time.time(),
-                "games": games
-            }
             with open(self.library_cache_path, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f)
+                json.dump(games, f)
         except Exception as e:
             print(f"[Cache] Save error: {e}")
 
@@ -55,9 +82,9 @@ class RomMClient:
             if not self.library_cache_path.exists():
                 return None, 0
             with open(self.library_cache_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            age = time.time() - data.get("timestamp", 0)
-            return data.get("games", []), age
+                games = json.load(f)
+            # We no longer track age in the simplified list format, return 0
+            return games, 0
         except Exception:
             return None, 0
 
@@ -127,6 +154,16 @@ class RomMClient:
 
             if r.status_code == 200:
                 self.token = r.json()["access_token"]
+                
+                # Save via config manager (keyring with encrypted fallback)
+                if self.config:
+                    self.config.save_token(self.token)
+                elif keyring:
+                    try:
+                        keyring.set_password("wingosy", "auth_token", self.token)
+                    except Exception as e:
+                        logging.warning(f"Failed to save token to keyring: {e}")
+                
                 return True, self.token
             return False, r.json().get("detail", "Login failed")
         except Exception as e:
@@ -145,7 +182,7 @@ class RomMClient:
         """
         import concurrent.futures
         url = f"{self.host}/api/roms"
-        limit = 100 # Increased from 50 to halve request count
+        limit = 100 
         all_items = []
         
         # Use a session for connection pooling
@@ -154,7 +191,6 @@ class RomMClient:
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
-        # 1. Fetch first page to get total count
         def _fetch_page(offset, retry=True):
             params = {"limit": limit, "offset": offset}
             try:
@@ -172,7 +208,7 @@ class RomMClient:
                 if r.status_code == 401:
                     return "REAUTH_REQUIRED"
                 if r.status_code != 200:
-                    return []
+                    return None
                 
                 data = r.json()
                 items = (data.get("items", []) if isinstance(data, dict)
@@ -216,11 +252,27 @@ class RomMClient:
         # Aggregate and cache
         self.user_games = all_items
         self.save_library_cache(all_items)
-        if self.config:
-            self.config.set("cached_library", all_items)
+        
+        # We no longer save cached_library to config.json explicitly here
+        # self.config.set("cached_library", all_items) is removed to avoid UI stutter
         
         print(f"[Library] Parallel fetch complete: {len(all_items)} games.")
         return all_items
+
+    def get_rom_details(self, rom_id):
+        """Fetch detailed information for a single ROM."""
+        url = f"{self.host}/api/roms/{rom_id}"
+        try:
+            r = requests.get(url, headers=self.get_auth_headers(), 
+                             timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
+            if r.status_code == 200:
+                rom_data = r.json()
+                logging.debug(f"ROM detail raw for {rom_id}: {json.dumps(rom_data, indent=2)}")
+                return rom_data
+            return None
+        except Exception as e:
+            print(f"[API] Error fetching ROM details for {rom_id}: {e}")
+            return None
 
     def get_cover_url(self, game):
         """Returns a valid URL for the game cover, preferring local RomM assets."""
@@ -280,6 +332,11 @@ class RomMClient:
             return False
 
     def get_latest_save(self, rom_id):
+        items = self.list_all_saves(rom_id)
+        if not items: return None
+        return sorted(items, key=lambda x: x.get("updated_at", ""), reverse=True)[0]
+
+    def list_all_saves(self, rom_id):
         try:
             r = requests.get(
                 f"{self.host}/api/saves",
@@ -288,21 +345,29 @@ class RomMClient:
                 timeout=REQUEST_TIMEOUT,
                 verify=CERTIFI_PATH
             )
-            if r.status_code != 200:
-                return None
+            if r.status_code != 200: return []
             items = r.json()
-            if not isinstance(items, list):
-                items = items.get("items", [])
-            if not items:
-                return None
-            return sorted(items,
-                key=lambda x: x.get("updated_at", ""),
-                reverse=True)[0]
+            return items if isinstance(items, list) else items.get("items", [])
         except Exception as e:
-            print(f"[API] get_latest_save error: {e}")
-            return None
+            print(f"[API] list_all_saves error: {e}")
+            return []
+
+    def delete_save(self, save_id):
+        try:
+            url = f"{self.host}/api/saves/{save_id}"
+            r = requests.delete(url, headers=self.get_auth_headers(), 
+                                timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
+            return r.status_code in [200, 204]
+        except Exception as e:
+            print(f"[API] delete_save error: {e}")
+            return False
 
     def get_latest_state(self, rom_id):
+        items = self.list_all_states(rom_id)
+        if not items: return None
+        return sorted(items, key=lambda x: x.get("updated_at", ""), reverse=True)[0]
+
+    def list_all_states(self, rom_id):
         try:
             r = requests.get(
                 f"{self.host}/api/states",
@@ -311,19 +376,22 @@ class RomMClient:
                 timeout=REQUEST_TIMEOUT,
                 verify=CERTIFI_PATH
             )
-            if r.status_code != 200:
-                return None
+            if r.status_code != 200: return []
             items = r.json()
-            if not isinstance(items, list):
-                items = items.get("items", [])
-            if not items:
-                return None
-            return sorted(items,
-                key=lambda x: x.get("updated_at", ""),
-                reverse=True)[0]
+            return items if isinstance(items, list) else items.get("items", [])
         except Exception as e:
-            print(f"[API] get_latest_state error: {e}")
-            return None
+            print(f"[API] list_all_states error: {e}")
+            return []
+
+    def delete_state(self, state_id):
+        try:
+            url = f"{self.host}/api/states/{state_id}"
+            r = requests.delete(url, headers=self.get_auth_headers(), 
+                                timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
+            return r.status_code in [200, 204]
+        except Exception as e:
+            print(f"[API] delete_state error: {e}")
+            return False
 
     def download_save(self, save_item, target_path, thread=None):
         try:
@@ -371,40 +439,55 @@ class RomMClient:
             print(f"[API] download_state error: {e}")
             return False
 
-    def upload_save(self, rom_id, emulator, file_path, slot="wingosy-windows", raw=False):
+    def upload_save(self, rom_id, emulator, file_obj, slot="wingosy-windows", raw=False, filename_override=None):
         try:
             url = f"{self.host}/api/saves"
             params = {"rom_id": rom_id, "emulator": emulator, "slot": slot}
-            filename = os.path.basename(file_path)
             
-            with open(file_path, 'rb') as f:
+            # file_obj can be a path string or a file-like object
+            if isinstance(file_obj, str):
+                f = open(file_obj, 'rb')
+                close_after = True
+                filename = filename_override or os.path.basename(file_obj)
+            else:
+                f = file_obj
+                close_after = False
+                filename = filename_override or "save.zip"
+            
+            # Strip .auto suffix 
+            if filename.endswith('.auto'):
+                filename = filename[:-5]
+            
+            try:
                 files = {'saveFile': (filename, f, 'application/octet-stream')}
-                try:
-                    r = requests.post(url, params=params, headers=self.get_auth_headers(), 
-                                      files=files, timeout=60, verify=CERTIFI_PATH)
-                except (requests.exceptions.ConnectTimeout,
-                        requests.exceptions.ConnectionError,
-                        requests.exceptions.Timeout,
-                        requests.exceptions.RequestException) as e:
-                    print(f"[API] Network error in upload_save: {e}")
-                    return False, str(e)
+                r = requests.post(url, params=params, headers=self.get_auth_headers(),
+                                  files=files, timeout=(10, 120), verify=CERTIFI_PATH)
                 print(f"[API] upload_save -> {r.status_code}: {r.text[:200]}")
                 return r.status_code in [200, 201], r.text
+            finally:
+                if close_after: f.close()
         except Exception as e:
             print(f"[API] upload_save error: {e}")
             return False, str(e)
 
-    def upload_state(self, rom_id, emulator, file_path,
-                     slot="wingosy-state"):
+    def upload_state(self, rom_id, emulator, file_obj, slot="wingosy-state", filename_override=None):
         try:
             from pathlib import Path
-            filename = Path(file_path).name
             
-            # Strip .auto suffix — RomM wants .state not .state.auto
+            if isinstance(file_obj, str):
+                f = open(file_obj, 'rb')
+                close_after = True
+                filename = filename_override or Path(file_obj).name
+            else:
+                f = file_obj
+                close_after = False
+                filename = filename_override or "state.state"
+            
+            # Strip .auto suffix 
             if filename.endswith('.auto'):
                 filename = filename[:-5]
             
-            # Strip RomM timestamp brackets if somehow present
+            # Strip RomM timestamp brackets 
             import re
             filename = re.sub(
                 r'\s*\[[^\]]*\d{4}-\d{2}-\d{2}[^\]]*\]', '', filename)
@@ -413,22 +496,17 @@ class RomMClient:
             params = {
                 "rom_id": rom_id,
                 "emulator": emulator,
+                "slot": slot
             }
             
-            with open(file_path, 'rb') as f:
-                files = {'stateFile': (filename, f,
-                                       'application/octet-stream')}
-                r = requests.post(
-                    url,
-                    params=params,
-                    headers=self.get_auth_headers(),
-                    files=files,
-                    timeout=60,
-                    verify=CERTIFI_PATH
-                )
-                print(f"[API] upload_state -> {r.status_code}: "
-                      f"{r.text[:300]}")
+            try:
+                files = {'stateFile': (filename, f, 'application/octet-stream')}
+                r = requests.post(url, params=params, headers=self.get_auth_headers(),
+                                  files=files, timeout=(10, 120), verify=CERTIFI_PATH)
+                print(f"[API] upload_state -> {r.status_code}: {r.text[:300]}")
                 return r.status_code in [200, 201], r.text
+            finally:
+                if close_after: f.close()
         except Exception as e:
             print(f"[API] upload_state error: {e}")
             return False, str(e)

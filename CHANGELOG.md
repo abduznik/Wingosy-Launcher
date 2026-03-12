@@ -1,59 +1,74 @@
 # Changelog
 
+## v0.6.0
+### Added
+- Windows native game support (.zip/.7z/.iso download, extract, launch)
+- PCGamingWiki save location suggestions
+- Per-game Windows settings (default exe, save directory)
+- Custom emulator editor UI with full schema support
+- Per-platform emulator assignment
+- Sync settings sub-tab with per-emulator sync toggle and conflict behavior
+- Platform Assignments sub-tab for granular control
+- Smart Windows pre-launch save pull logic
+- Extraction progress bar for Windows games
+- Dynamic emulator schema managed via emulators.json
+- Redesigned game detail focus view
+- Watcher error boundaries and configurable log levels
+
+### Security
+- Migrated auth token storage to system keyring (Windows Credential Picker)
+- Automatic migration of existing tokens from plaintext config
+
+### Fixed
+- Library reload behavior on emulator path changes
+- Platform filter reset regression
+- Standardized RomMClient token lifecycle management
+
 ## v0.5.7
-### Fixes
-- Library now loads all pages in parallel — users with 300+ ROMs and slow servers go from 6+ minutes to ~60s
-- Added loading status label: shows connecting/loading progress inline instead of popup banners
-- Connection timeout increased with better error messages
-- MEI cleanup delay increased to prevent access denied on restart
+### Added
+- Parallel library page loading for significantly faster startup
+- Inline loading status labels instead of popup banners
+
+### Fixed
+- Increased connection timeouts with descriptive error messages
+- MEI cleanup delay to prevent access denied errors on restart
 
 ## v0.5.6
-### Fixes
-- Connection timeout: app no longer hangs indefinitely on slow or unreachable servers
-- Better error messages: distinguishes timeout vs wrong host vs auth failure
-- MEI cleanup delay increased to prevent access denied errors on restart
+### Fixed
+- Improved error handling for slow or unreachable servers
+- Distinct error messages for timeout vs auth failure
+- MEI cleanup resilience
 
 ## v0.5.5
-### Critical Fixes
-- Fixed app crash on restart (certifi TLS path after MEI cleanup)
-- Fixed restart not launching new process on Windows
-- Fixed platform filter resetting after any UI action
-- Fixed false connection failure banner on startup
-- Fixed stdout/stderr crash when running as frozen exe
-- Fixed PSP state never syncing when SAVEDATA unchanged
-- Fixed upload_state going to wrong endpoint
-- Fixed save conflict dialog appearing after emulator launched
+### Added
+- Cloud pull blocks before emulator launch
+- Live connection tests in test suite
+- File logging to ~/.wingosy/app.log
 
-### New Features
-- RetroArch dual sync: SRM + savestate on every session
-- PSP full sync: SAVEDATA folder + state file
-- Cloud pull blocks before emulator launches
-- Live connection tests added to test suite
-- File logging to ~/.wingosy/app.log for diagnostics
+### Fixed
+- App crash on restart related to certifi TLS paths
+- Restart logic for frozen executables on Windows
+- Platform filter persistence
+- False connection failure banners on startup
+- PSP state sync when SAVEDATA remained unchanged
+- Save conflict dialog timing
 
 ## v0.5.4
-### New Features
-- RetroArch dual save sync: SRM + savestate synced on every session for all RetroArch cores
-- PSP full sync: SAVEDATA folder AND state file both uploaded and downloaded per session
-- Cloud pull now happens before emulator launches (blocking)
-- Conflict dialog shown before launch, not after
+### Added
+- Dual save sync (SRM + savestate) for RetroArch cores
+- Full PSP folder and state file synchronization
+- Pre-launch blocking cloud pull
 
-### Bug Fixes
-- Fixed skip_next_pull firing on every launch instead of only after conflict resolution
-- Fixed upload_state sending to wrong endpoint
-- Fixed PSP permission error on SAVEDATA folder at launch
-- Fixed PSP state never uploading when SAVEDATA was unchanged
-- Fixed state file written without .auto suffix on download
-- Fixed _ppsspp_assets_checked NameError on PSP launch
-- Added missing save folder mappings for 3DO, MSX, Saturn
-
-### Cleanup
-- Removed all diagnostic debug prints and temp scripts
+### Fixed
+- skip_next_pull logic after conflict resolution
+- PSP permission errors on SAVEDATA folders
+- State file naming conventions on download
+- Missing save folder mappings for 3DO, MSX, and Saturn
 
 ## v0.5.3
-### New Features
-- Cards-per-row setting (1–12, live resize)
-- Background library fetch with instant cache on startup
-- Live host editing in Settings with test + apply + restart
+### Added
+- Cards-per-row setting (1–12) with live resize
+- Background library fetch with local caching
+- Live host editing with connection testing
 - Network error handling with reconnect banner
-- MEI folder cleanup on startup
+- Startup MEI folder cleanup

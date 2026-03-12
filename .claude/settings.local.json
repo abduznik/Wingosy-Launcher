@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"F:\\\\Coding\\\\argosy-launcher-win\" && python -c \"from src.ui.main_window import WingosyMainWindow; print\\('main_window import OK'\\)\" 2>&1)"
+    ]
+  }
+}
