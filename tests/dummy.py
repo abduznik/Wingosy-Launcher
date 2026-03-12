@@ -264,3 +264,15 @@ class DummyRomMClient:
     def update_playtime(self, rom_id, seconds):
         print(f"[DummyClient] Updated playtime for rom_id={rom_id}: {seconds}s")
         return True
+
+    def list_all_saves(self, rom_id):
+        return []
+
+    def list_all_states(self, rom_id):
+        return []
+
+    def delete_save(self, save_id):
+        return True
+
+    def delete_state(self, state_id):
+        return True
