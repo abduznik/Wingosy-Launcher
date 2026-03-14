@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QMessageBox, QProgressBar, 
                              QComboBox, QFileDialog, QSpinBox, QScrollArea,
-                             QCheckBox, QFrame)
+                             QCheckBox, QFrame, QApplication)
 from PySide6.QtCore import Qt, QTimer
 
 from src.ui.threads import UpdaterThread, SelfUpdateThread
@@ -439,7 +439,11 @@ class SettingsTab(QWidget):
             
     def start_self_update(self):
         self.up_btn.setEnabled(False)
+        self.pbar.setValue(0)
         self.pbar.setVisible(True)
+        # Force UI update
+        QApplication.processEvents()
+        
         self.t = SelfUpdateThread(self.latest_url, Path(sys.executable).resolve())
         self.t.progress.connect(self.pbar.setValue)
         self.t.finished.connect(self.on_self_update_finished)
@@ -447,23 +451,48 @@ class SettingsTab(QWidget):
         
     def on_self_update_finished(self, success, msg):
         if success:
+            self.pbar.setValue(100)
             QMessageBox.information(self, "Done", "Update installed. Restarting...")
             exe = str(Path(sys.executable).resolve())
             
             if sys.platform == "win32":
-                # Create a detached process that waits 2 seconds then starts the new exe
-                # This is more robust than a batch file for some antivirus/UAC setups
-                cmd = f'timeout /t 2 >NUL && start "" "{exe}"'
+                # Implementation of the "Bridge" restart:
+                # We write a temporary batch file that waits for THIS process PID to die, 
+                # then starts the new one.
+                pid = os.getpid()
+                bat_path = Path.home() / ".wingosy" / "restart_bridge.bat"
+                bat_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # The batch logic:
+                # 1. Loop until tasklist no longer shows our PID
+                # 2. Start the new EXE
+                # 3. Self-delete
+                bat_content = f"""@echo off
+:wait
+tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}">NUL
+if "%ERRORLEVEL%"=="0" (
+    timeout /t 1 /nobreak >NUL
+    goto wait
+)
+timeout /t 1 /nobreak >NUL
+start "" "{exe}"
+del "%~f0"
+"""
+                bat_path.write_text(bat_content, encoding="utf-8")
+                
                 subprocess.Popen(
-                    ["cmd.exe", "/c", cmd],
+                    ["cmd.exe", "/c", str(bat_path)],
                     creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS,
                     close_fds=True
                 )
             else:
                 subprocess.Popen([exe], close_fds=True)
                 
+            QApplication.instance().quit()
             sys.exit(0)
         else:
+            self.up_btn.setEnabled(True)
+            self.pbar.setVisible(False)
             QMessageBox.critical(self, "Failed", msg)
             
     def do_logout(self):
