@@ -1,9 +1,17 @@
 # Changelog
 
-## v0.6.4 (Planned)
+## v0.6.5 (Planned)
 - Auto-extraction of BIOS files from multi-file archives
 - BIOS download progress bars in manager UI
 - Dedicated BIOS management tab (independent of emulator list)
+
+## v0.6.4 (2026-03-17)
+### Fixed
+- Download stalling at 100%: registry entry now correctly unregistered when a download fails, preventing the UI from freezing with no Play button
+- Duplicate downloads appearing when re-clicking download on a stalled game: registry now cancels and cleans up any existing entry before registering a new one
+- PCSX2 save path returning None when memcards directory not yet created: configured path is now returned regardless of whether it exists on disk
+- FolderStrategy returning None for uncreated save directories: get_save_dir now falls back to the configured path even if the folder doesn't exist yet
+- Fixed hint argument order in FolderStrategy auto-detection: exe path is now tried before rom dict, preventing type errors in PCSX2 and similar emulators
 
 ## v0.6.3 (2026-03-14)
 ### Added

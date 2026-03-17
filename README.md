@@ -21,6 +21,13 @@
 - Parallel library loading for large collections
 - Configurable sync interval and log level
 
+## What's New in v0.6.4 (2026-03-17)
+### Fixed
+- **Download Stall at 100%**: Downloads that failed after completing no longer freeze the UI — the Play button now appears correctly and the registry entry is cleaned up
+- **Duplicate Downloads**: Re-clicking download on a stalled game no longer creates duplicate entries in the download list
+- **PCSX2 Save Path**: Save directory is now resolved correctly even before the memcards folder exists on disk
+- **Save Strategy Robustness**: FolderStrategy and PCSX2Strategy no longer return None for configured-but-uncreated save directories
+
 ## What's New in v0.6.3 (2026-03-14)
 ### Added
 - **Improved Library UI**:
