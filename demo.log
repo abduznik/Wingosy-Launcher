@@ -1,7 +1,9 @@
-2026-03-07 13:00:22,686 [INFO] ============================================================
-2026-03-07 13:00:22,686 [INFO]   WINGOSY DEMO MODE — based on v0.5.4
-2026-03-07 13:00:22,686 [INFO]   Fake library size: 5000 games
-2026-03-07 13:00:22,687 [INFO]   Log file: F:\Coding\argosy-launcher-win\demo.log
-2026-03-07 13:00:22,687 [INFO] ============================================================
-2026-03-07 13:00:23,408 [INFO] Starting Wingosy window in demo mode...
-2026-03-07 13:00:30,553 [INFO]   Scroll batch size: 50 (matching real RomM page size)
+2026-03-14 21:51:19,668 [INFO] ============================================================
+2026-03-14 21:51:19,668 [INFO]   WINGOSY DEMO MODE — 0.6.4-demo
+2026-03-14 21:51:19,668 [INFO]   Fake library size: 5000 games
+2026-03-14 21:51:19,669 [INFO]   Log file: F:\Coding\argosy-launcher-win\demo.log
+2026-03-14 21:51:19,669 [INFO] ============================================================
+2026-03-14 21:51:20,252 [INFO] Starting Wingosy window in demo mode...
+2026-03-14 21:51:20,675 [INFO] 🚀 Watcher Active (Process-Specific Mode).
+2026-03-14 21:51:20,806 [INFO] [Library] Cache loaded: 300 games
+2026-03-14 21:51:22,114 [INFO]   Scroll batch size: 50 (matching real RomM page size)

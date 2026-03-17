@@ -47,3 +47,4 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+.aider*

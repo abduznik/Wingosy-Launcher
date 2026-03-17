@@ -190,7 +190,7 @@ class DummyRomMClient:
         pass
 
     def load_library_cache(self):
-        return None, 0
+        return self.user_games, 0
 
     def fetch_library_page(self, limit=50, offset=0):
         """

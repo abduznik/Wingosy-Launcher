@@ -241,27 +241,48 @@ class GameCard(QWidget):
 
     def start_image_fetch(self, main_window, generation):
         url = self.client.get_cover_url(self.game)
-        if url:
-            self.fetcher = ImageFetcher(self.game['id'], url)
-            self.fetcher.finished.connect(self.set_image)
-            self.fetcher.finished.connect(lambda gid, pix: main_window._on_image_fetched(self.fetcher, generation))
-            self.fetcher.start()
-            return self.fetcher
-        return None
+        if not url:
+            # Render a simple local placeholder — no network fetch needed
+            from PySide6.QtGui import QPainter, QFont
+            from PySide6.QtCore import QRect
+            w = self.img_label.width() or 150
+            h = self.img_label.height() or 200
+            pixmap = QPixmap(w, h)
+            pixmap.fill(QColor("#2a2a3e"))
+            painter = QPainter(pixmap)
+            painter.setPen(QColor("#8888aa"))
+            painter.setFont(QFont("Arial", 11))
+            painter.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "No Cover")
+            painter.end()
+            self.img_label.setPixmap(pixmap)
+            return None
+        self.fetcher = ImageFetcher(self.game['id'], url)
+        self.fetcher.finished.connect(self.set_image)
+        self.fetcher.finished.connect(lambda gid, pix: main_window._on_image_fetched(self.fetcher, generation))
+        self.fetcher.start()
+        return self.fetcher
 
     def set_image(self, game_id, pixmap):
         try:
             self._full_pixmap = pixmap
+            # Store detected aspect ratio in parent LibraryTab config (memory only)
+            if pixmap.width() > 0:
+                detected_ratio = pixmap.height() / pixmap.width()
+                p = self.parent()
+                while p and not isinstance(p, LibraryTab):
+                    p = p.parent()
+                if p:
+                    p.config.data["cover_aspect_ratio"] = detected_ratio
+            # Let _resize_all_cards handle all painting — it's the single source of truth
             w = self.img_label.width()
             h = self.img_label.height()
             if w > 0 and h > 0:
                 self.img_label.setPixmap(
                     pixmap.scaled(w, h,
-                        Qt.KeepAspectRatio,
+                        Qt.KeepAspectRatioByExpanding,
                         Qt.SmoothTransformation)
                 )
         except RuntimeError:
-            # Widget might have been deleted while thread was finishing
             pass
 
     def mouseReleaseEvent(self, event):
@@ -281,6 +302,7 @@ class LibraryTab(QWidget):
         self.config = main_window.config
         self._all_cards = []       # all GameCard widgets currently in grid 
         self._render_generation = 0  # incremented to cancel in-flight renders
+        self._filter_generation = 0  # incremented on every apply_filters call
         self._loading_label = None
         self._pending_games = []    # games not yet rendered
         self._load_more_label = None  # "Load more..." indicator at bottom  
@@ -294,6 +316,12 @@ class LibraryTab(QWidget):
         self._scroll_debounce.setSingleShot(True)
         self._scroll_debounce.setInterval(150)  # ms cooldown
         self._scroll_debounce.timeout.connect(self._do_load_batch)
+
+        # BUG FIX: Debounce library updates to prevent lag spikes on 'All Platforms'
+        self._library_update_timer = QTimer(self)
+        self._library_update_timer.setSingleShot(True)
+        self._library_update_timer.setInterval(300)  # 300ms debounce
+        self._library_update_timer.timeout.connect(self._do_library_refresh)
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -555,9 +583,14 @@ class LibraryTab(QWidget):
         """Called when new games arrive from parallel server fetch.
         Instead of appending to the end (which breaks alphabetical order),
         trigger a full apply_filters re-render so all games are sorted correctly.
+        
+        BUG FIX: Debounce this to avoid rapid successive grid rebuilds during parallel fetch.
         """
         # Games are already added to main_window.all_games by the caller.
-        # Just re-render the full sorted view.
+        self._library_update_timer.start()
+
+    def _do_library_refresh(self):
+        """Actual logic for debounced library refresh."""
         self.apply_filters()
 
     def _get_card_size(self):
@@ -566,7 +599,8 @@ class LibraryTab(QWidget):
         spacing = self.grid_layout.horizontalSpacing() * (cols - 1) + 20    
         available = self.scroll_area.viewport().width() - spacing
         w = max(100, available // cols)
-        h = int(w * 1.5)
+        aspect = float(self.config.get("cover_aspect_ratio", 1.5))
+        h = int(w * aspect)
         return w, h, cols
 
     def _resize_all_cards(self):
@@ -633,6 +667,13 @@ class LibraryTab(QWidget):
 
     def apply_filters(self):
         from src import download_registry
+        
+        # BUG FIX: Stop any pending scroll loads before starting a new filter
+        self._scroll_debounce.stop()
+        self._is_loading_batch = False
+        self._filter_generation += 1
+        my_filter_gen = self._filter_generation
+
         text = self.search_input.text().lower()
         platform = self.platform_filter.currentText()
         self._selected_index = -1 # Reset selection on filter
@@ -675,6 +716,10 @@ class LibraryTab(QWidget):
         # Always sort alphabetically by game name — handle potential None/empty names
         filtered.sort(key=lambda g: str(g.get('name', '') or g.get('fs_name', '')).lower())
 
+        # RACE CONDITION GUARD: If a newer filter started while we were sorting, bail
+        if my_filter_gen != self._filter_generation:
+            return
+
         platform_changed = (
             not hasattr(self, '_current_platform') or
             self._current_platform != platform
@@ -695,30 +740,35 @@ class LibraryTab(QWidget):
                         card.set_selected(False)
                         if visible:
                             visible_cards.append(card)
-                    except RuntimeError:
-                        pass
+                    except (RuntimeError, AttributeError):
+                        continue
                 
                 # 2. Clear current layout positions (without deleting widgets)
                 while self.grid_layout.count():
                     item = self.grid_layout.takeAt(0)
-                    # We just take it out, it stays a child of grid_widget
+                    if item and item.widget() and not isinstance(item.widget(), GameCard):
+                        try:
+                            item.widget().hide()
+                            item.widget().deleteLater()
+                        except (RuntimeError, AttributeError):
+                            pass
                 
                 # 3. Re-add only visible ones in order
                 _, _, cols = self._get_card_size()
                 for idx, card in enumerate(visible_cards):
+                    # RACE CONDITION GUARD
+                    if my_filter_gen != self._filter_generation: return
+                    
                     row = idx // cols
                     col = idx % cols
-                    self.grid_layout.addWidget(card, row, col)
+                    try:
+                        self.grid_layout.addWidget(card, row, col)
+                    except (RuntimeError, AttributeError):
+                        continue
                 
                 # 4. Handle "No games match" case
                 if not visible_cards:
                     self.show_empty_message("No games match your search.")
-                else:
-                    # Clear any empty message labels
-                    for i in range(self.grid_layout.count()):
-                        item = self.grid_layout.itemAt(i)
-                        if item and hasattr(item.widget(), 'text') and "No games" in item.widget().text():
-                            item.widget().deleteLater()
 
             finally:
                 self.grid_widget.setUpdatesEnabled(True)
@@ -751,9 +801,9 @@ class LibraryTab(QWidget):
 
     def populate_games(self, games, status=None):
         """Standard method to populate the grid from a list of games."""
-        self.populate_grid(games)
         if status:
             self.set_status(status)
+        self.apply_filters()
 
     def populate_grid(self, games):
         # Reset refresh button style
@@ -765,19 +815,20 @@ class LibraryTab(QWidget):
         self._render_generation += 1
         my_gen = self._render_generation
         
-        # Clear image fetch state in main window
-        self.main_window.image_fetch_queue = []
-        # Stop any active fetchers to prevent "QThread: Destroyed while running"
-        for f in self.main_window.active_image_fetchers[:]:
+        # BUG FIX: Also increment filter generation to stop any pending scroll loads
+        self._filter_generation += 1
+        my_filter_gen = self._filter_generation
+        
+        # BUG FIX: Stop all active image fetchers before clearing grid.
+        # We request interruption and quit, but do NOT wait() because it blocks the UI.
+        for fetcher in list(getattr(self.main_window, 'active_image_fetchers', [])):
             try:
-                if f.isRunning():
-                    # We don't terminate() because it's unsafe, 
-                    # but by clearing the list, we let them finish 
-                    # and they'll be ignored by generation check.
-                    pass
-            except RuntimeError:
+                fetcher.requestInterruption()
+                fetcher.quit()
+            except (RuntimeError, AttributeError):
                 pass
         self.main_window.active_image_fetchers = []
+        self.main_window.image_fetch_queue = []
 
         self._all_cards = []
         self._pending_games = list(games)  # full list, render in batches   
@@ -790,8 +841,11 @@ class LibraryTab(QWidget):
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             if item and item.widget():
-                item.widget().hide()
-                item.widget().deleteLater()
+                try:
+                    item.widget().hide()
+                    item.widget().deleteLater()
+                except (RuntimeError, AttributeError):
+                    pass
 
         # Remove old load-more label ref
         self._load_more_label = None
@@ -801,24 +855,48 @@ class LibraryTab(QWidget):
             return
 
         # Render first batch immediately
-        self._render_next_batch(my_gen)
+        self._render_next_batch(my_gen, my_filter_gen)
 
-    def _render_next_batch(self, generation=None):
+    def _do_load_batch(self):
+        """Actually load the next batch — called after scroll debounce."""
+        if not self._pending_games or self._is_loading_batch:
+            return
+        
+        # BUG FIX: Capture current generations
+        my_gen = self._render_generation
+        my_filter_gen = self._filter_generation
+
+        scrollbar = self.scroll_area.verticalScrollBar()
+        max_val = scrollbar.maximum()
+        value = scrollbar.value()
+        if max_val <= 0 or value < max_val * 0.60:
+            return
+
+        print(f"[Library] Threshold hit — loading next batch. Pending: {len(self._pending_games)}")
+        self._is_loading_batch = True
+        self._render_next_batch(my_gen, my_filter_gen)
+
+    def _render_next_batch(self, generation=None, filter_generation=None):
         """Render the next LOAD_BATCH pending games into the grid."""       
         # Use current generation if not specified
         if generation is None:
             generation = self._render_generation
+        if filter_generation is None:
+            filter_generation = self._filter_generation
 
-        # Abort if stale
-        if generation != self._render_generation:
+        # Abort if stale (race condition guard)
+        if generation != self._render_generation or filter_generation != self._filter_generation:
             self._is_loading_batch = False
             return
 
         if not self._pending_games:
             # Remove load-more label if present
             if self._load_more_label:
-                self._load_more_label.hide()
-                self._load_more_label.deleteLater()
+                try:
+                    self._load_more_label.hide()
+                    self._load_more_label.deleteLater()
+                except (RuntimeError, AttributeError):
+                    pass
                 self._load_more_label = None
             self._is_loading_batch = False
             return
@@ -831,9 +909,12 @@ class LibraryTab(QWidget):
 
         # Remove load-more label before adding new cards
         if self._load_more_label:
-            self.grid_layout.removeWidget(self._load_more_label)
-            self._load_more_label.hide()
-            self._load_more_label.deleteLater()
+            try:
+                self.grid_layout.removeWidget(self._load_more_label)
+                self._load_more_label.hide()
+                self._load_more_label.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
             self._load_more_label = None
 
         card_w, card_h, cols_per_row = self._get_card_size()
@@ -846,19 +927,24 @@ class LibraryTab(QWidget):
             col = total_so_far % cols_per_row
 
             for i, game in enumerate(batch):
-                if generation != self._render_generation:
+                # RACE CONDITION GUARD
+                if generation != self._render_generation or filter_generation != self._filter_generation:
                     return
 
-                card = GameCard(game, self.client, self.config, sync_cache)
-                if game.get('_local_exists'):
-                    card.set_local_exists(True)
-                card.clicked.connect(lambda g=game: self.open_detail(g))
-    
-                card.setFixedSize(card_w, card_h)
-                card.img_label.setFixedSize(card_w - 10, card_h - 30)       
-                card.title_label.setFixedWidth(card_w - 10)
-                self.grid_layout.addWidget(card, row, col)
-                self._all_cards.append(card)
+                try:
+                    card = GameCard(game, self.client, self.config, sync_cache)
+                    if game.get('_local_exists'):
+                        card.set_local_exists(True)
+                    card.clicked.connect(lambda g=game: self.open_detail(g))
+        
+                    card.setFixedSize(card_w, card_h)
+                    card.img_label.setFixedSize(card_w - 10, card_h - 30)       
+                    card.title_label.setFixedWidth(card_w - 10)
+                    self.grid_layout.addWidget(card, row, col)
+                    self._all_cards.append(card)
+                except (RuntimeError, AttributeError):
+                    continue
+
                 col += 1
                 if col >= cols_per_row:
                     col = 0
@@ -873,17 +959,29 @@ class LibraryTab(QWidget):
         my_fetch_gen = self.main_window.fetch_generation
         start_idx = len(self._all_cards) - len(batch)
         for i, card in enumerate(self._all_cards[start_idx:]):
+            # RACE CONDITION GUARD
+            if generation != self._render_generation or filter_generation != self._filter_generation:
+                break
+                
             abs_idx = start_idx + i
             if abs_idx < 12:
-                fetcher = card.start_image_fetch(
-                    self.main_window, my_fetch_gen)
-                if fetcher:
-                    self.main_window.active_image_fetchers.append(fetcher)  
+                try:
+                    fetcher = card.start_image_fetch(
+                        self.main_window, my_fetch_gen)
+                    if fetcher:
+                        self.main_window.active_image_fetchers.append(fetcher)
+                except (RuntimeError, AttributeError):
+                    continue
             else:
                 self.main_window.image_fetch_queue.append(card)
 
         # If more games remain, add a load-more indicator at the bottom     
         if self._pending_games:
+            # RACE CONDITION GUARD
+            if generation != self._render_generation or filter_generation != self._filter_generation:
+                self._is_loading_batch = False
+                return
+
             remaining = len(self._pending_games)
             self._load_more_label = QLabel(f"⬇ Scroll down to load {remaining} more games...")       
             self._load_more_label.setAlignment(Qt.AlignCenter)
@@ -902,8 +1000,11 @@ class LibraryTab(QWidget):
         
         # Remove old detail page if exists
         if self.detail_panel:
-            self.stack.removeWidget(self.detail_panel)
-            self.detail_panel.deleteLater()
+            try:
+                self.stack.removeWidget(self.detail_panel)
+                self.detail_panel.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
         
         self.detail_panel = GameDetailPanel(
             game, self.client, self.config,
@@ -919,15 +1020,23 @@ class LibraryTab(QWidget):
         self.stack.setCurrentWidget(self.grid_page)
         self.filter_widget.show()
         if self.detail_panel:
-            self.stack.removeWidget(self.detail_panel)
-            self.detail_panel.deleteLater()
+            try:
+                self.stack.removeWidget(self.detail_panel)
+                self.detail_panel.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
             self.detail_panel = None
+        self._resize_all_cards()
 
     def show_empty_message(self, message):
         for i in reversed(range(self.grid_layout.count())):
             item = self.grid_layout.itemAt(i)
             if item and item.widget():
-                item.widget().setParent(None)
+                try:
+                    item.widget().setParent(None)
+                    item.widget().deleteLater()
+                except (RuntimeError, AttributeError):
+                    pass
 
         # If it's an error message, highlight the refresh button
         if any(word in message.lower() for word in ["error", "failed", "could not", "unable"]):

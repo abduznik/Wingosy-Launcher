@@ -504,6 +504,69 @@ class DolphinStrategy(SaveStrategy):
         return self._get_card_dir()
 
 
+class PCSX2Strategy(SaveStrategy):
+    """
+    Handles PCSX2 memcard files and only syncs .ps2 memcard files modified after session start.
+    """
+    mode_id = "pcsx2"
+
+    def _memcards_dir(self) -> Optional[Path]:
+        res = self.emulator.get("save_resolution", {})
+        save_dir = res.get("path", "")
+        if save_dir and Path(save_dir).exists():
+            return Path(save_dir)
+        
+        exe = self.emulator.get("executable_path", "")
+        if exe:
+            portable = Path(exe).parent / "memcards"
+            if portable.exists():
+                return portable
+        
+        # Fallback to Documents
+        candidates = [
+            Path.home() / "Documents" / "PCSX2" / "memcards",
+            Path.home() / "Documents" / "PCSX2" / "Memcards",
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
+    def get_save_files(self, rom: dict) -> list[Path]:
+        d = self._memcards_dir()
+        if not d or not d.exists():
+            return []
+        
+        # Only sync .ps2 files
+        ps2_files = [p for p in d.glob("*.ps2") if p.is_file()]
+        
+        if self.session_start_time > 0:
+            changed = []
+            for f in ps2_files:
+                try:
+                    if f.stat().st_mtime > self.session_start_time:
+                        changed.append(f)
+                except Exception: pass
+            return changed
+            
+        return ps2_files
+
+    def restore_save_files(self, rom, save_data, filename):
+        d = self._memcards_dir()
+        if not d:
+            return False
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            (d / filename).write_bytes(save_data)
+            return True
+        except Exception as e:
+            logging.error(f"[PCSX2Strategy] Restore failed: {e}")
+            return False
+
+    def get_save_dir(self, rom):
+        return self._memcards_dir()
+
+
 class PS3Strategy(SaveStrategy):
     """
     Handles RPCS3 Title ID based savedata mapping.
@@ -601,8 +664,6 @@ class CemuStrategy(SaveStrategy):
 
 # Emulator-specific auto-detection hints: id -> list of candidate Path lambdas (tried in order)
 _EMU_SAVE_HINTS: dict[str, list] = {
-    "pcsx2":   [lambda e: Path(e).parent / "memcards",
-                lambda _: Path.home() / "Documents" / "PCSX2" / "memcards"],
     "dolphin": [lambda e: Path(e).parent / "User" / "GC",
                 lambda _: Path.home() / "Documents" / "Dolphin Emulator" / "GC"],
     "rpcs3":   [lambda e: Path(e).parent / "dev_hdd0" / "home" / "00000001" / "savedata",
@@ -953,6 +1014,7 @@ STRATEGY_REGISTRY: dict[str, type[SaveStrategy]] = {
     "windows": WindowsNativeStrategy,
     "switch": SwitchStrategy,
     "dolphin": DolphinStrategy,
+    "pcsx2": PCSX2Strategy,
     "ps3": PS3Strategy,
     "cemu": CemuStrategy,
     "duckstation": DuckStationStrategy,
@@ -976,6 +1038,7 @@ def get_strategy(config: dict, emulator: dict) -> SaveStrategy:
         if emu_id == "eden": mode = "switch"
         elif emu_id == "rpcs3": mode = "ps3"
         elif emu_id == "duckstation": mode = "duckstation"
+        elif emu_id == "pcsx2": mode = "pcsx2"
         elif emu_id in ("xenia", "xenia_canary"): mode = "xenia"
         elif emu_id in STRATEGY_REGISTRY and emu_id not in ("folder", "file", "retroarch"):
             mode = emu_id

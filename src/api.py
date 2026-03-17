@@ -275,7 +275,6 @@ class RomMClient:
             return None
 
     def get_cover_url(self, game):
-        """Returns a valid URL for the game cover, preferring local RomM assets."""
         path = game.get('path_cover_large') or game.get('path_cover_small') 
         if path:
             return path if path.startswith('http') else f"{self.host}{path}"
@@ -284,8 +283,7 @@ class RomMClient:
             if url.startswith('//'):
                 return f"https:{url}"
             return url
-        # Fallback to direct ID path if all else fails
-        return f"{self.host}/api/raw/covers/{game['id']}"
+        return None
 
     def download_rom(self, rom_id, file_name, target_path, progress_cb=None, thread=None):
         try:

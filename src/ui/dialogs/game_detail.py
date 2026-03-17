@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox, QProgressBar, QScrollArea, QFileDialog, QApplication, QDialog)
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QPoint
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QColor
 
 from src.ui.threads import (RomDownloader, ImageFetcher, ConflictResolveThread, GameDescriptionFetcher, ExtractionThread)
 from src.ui.widgets import format_size, get_resource_path, format_speed
@@ -527,13 +527,31 @@ class GameDetailPanel(QWidget):
             self.it = ImageFetcher(self.game['id'], url)
             def _safe_set_pixmap(g, p):
                 try:
-                    self.img_label.setPixmap(p.scaled(280, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    if p and not p.isNull():
+                        self.img_label.setPixmap(p.scaled(280, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    else:
+                        self._render_placeholder()
                 except RuntimeError:
                     pass  # Panel was closed before image loaded
             self.it.finished.connect(_safe_set_pixmap)
             self.it.finished.connect(lambda t=self.it: self.main_window.active_threads.remove(t) if t in self.main_window.active_threads else None)
             self.main_window.active_threads.append(self.it)
             self.it.start()
+        else:
+            self._render_placeholder()
+
+    def _render_placeholder(self):
+        from PySide6.QtGui import QPainter, QFont
+        from PySide6.QtCore import QRect
+        w, h = 280, 400
+        pixmap = QPixmap(w, h)
+        pixmap.fill(QColor("#2a2a3e"))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor("#8888aa"))
+        painter.setFont(QFont("Arial", 16, QFont.Bold))
+        painter.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "No Cover")
+        painter.end()
+        self.img_label.setPixmap(pixmap)
             
     def _start_desc_fetch(self):
         self.dt = GameDescriptionFetcher(self.client, self.game['id'])

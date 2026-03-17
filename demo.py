@@ -15,7 +15,7 @@ from src.watcher import WingosyWatcher
 from src.ui import WingosyMainWindow
 from tests.dummy import DummyRomMClient
 
-VERSION = "DEMO"
+VERSION = "0.6.4-demo"
 
 # Set up logging to both console and file
 log_path = Path("demo.log")
@@ -36,7 +36,7 @@ def main():
     args = parser.parse_args()
 
     logger.info("=" * 60)
-    logger.info("  WINGOSY DEMO MODE — based on v0.5.7")
+    logger.info(f"  WINGOSY DEMO MODE — {VERSION}")
     logger.info(f"  Fake library size: {args.count} games")
     logger.info(f"  Log file: {log_path.resolve()}")
     logger.info("=" * 60)
@@ -54,6 +54,14 @@ def main():
     # Use dummy client — no login needed
     DummyRomMClient.GAME_COUNT = args.count
     client = DummyRomMClient(config=config)
+
+    # BUG FIX: Delete real library cache BEFORE fetch so no startup path 
+    # can read the real cache data.
+    try:
+        client.library_cache_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
     client.fetch_library()  # pre-populate user_games
 
     logger.info("Starting Wingosy window in demo mode...")
