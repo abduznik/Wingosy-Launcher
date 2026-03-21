@@ -64,7 +64,9 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
 
     # 3. Fuzzy extension matching fallbacks
     # Common disc and ROM formats: .chd, .iso, .cso, .pbp, .bin, .img, .mdf, .z64, .n64, .v64
-    extensions = ['.chd', '.iso', '.cso', '.pbp', '.bin', '.img', '.mdf', '.z64', '.n64', '.v64']
+    extensions = ['.chd', '.iso', '.cso', '.pbp', '.bin', '.img', '.mdf', '.z64', '.n64', '.v64',
+                  '.nsp', '.xci', '.nsz', '.rvz', '.gcz', '.wbfs', '.wua', '.3ds', '.cia',
+                  '.nds', '.gba', '.gbc', '.gb', '.sfc', '.smc', '.nes', '.gen', '.md']
     for ext in extensions:
         if ext in excluded_exts: continue
         candidate = stem + ext
@@ -73,6 +75,20 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
             if p_cand.exists(): return p_cand
         p_cand = base_path / candidate
         if p_cand.exists(): return p_cand
+
+    # 3b. Game-name-based fuzzy search — catches files renamed post-download
+    # (e.g. server sent "COMICSANS18.LAF" but we renamed it to "Grim Fandango Remastered.nsp")
+    game_name = game.get('name', '')
+    if game_name and platform:
+        safe_game_name = re.sub(r'[^\w\s\-\.\(\)]', '', game_name).strip()
+        if safe_game_name:
+            for ext in extensions:
+                if ext in excluded_exts: continue
+                candidate = safe_game_name + ext
+                p_cand = base_path / platform / candidate
+                if p_cand.exists(): return p_cand
+                p_cand = base_path / candidate
+                if p_cand.exists(): return p_cand
 
     # 4. PS3/Folder-based fallback (e.g. RPCS3 games stored as folders)
     if platform:

@@ -389,30 +389,92 @@ class GameDetailPanel(QWidget):
         self.dl_thread.start()
         self._reconnect_active_download()
 
+    # Known ROM extensions that are legitimate — no rename needed
+    VALID_ROM_EXTENSIONS = {
+        '.iso', '.chd', '.cso', '.pbp', '.bin', '.img',   # disc images
+        '.nsp', '.xci', '.nsz',                            # Switch
+        '.zip', '.7z', '.rar',                             # archives
+        '.rvz', '.gcz', '.wbfs', '.wia',                   # GameCube/Wii
+        '.wua', '.rpx', '.wud',                            # Wii U
+        '.3ds', '.cia', '.nds',                            # Nintendo handhelds
+        '.n64', '.z64', '.v64',                            # N64
+        '.gba', '.gbc', '.gb',                             # Game Boy
+        '.sfc', '.smc', '.snes',                           # SNES
+        '.nes', '.fds',                                    # NES
+        '.gen', '.md', '.smd',                             # Genesis
+        '.psp',                                            # PSP saves (not ROM)
+        '.exe',                                            # Windows
+    }
+
+    def _sanitize_downloaded_file(self, path: str) -> str:
+        """
+        If the downloaded file has an unrecognized extension (e.g. COMICSANS18.LAF),
+        rename it to a clean name: <game_title_slug>.<expected_ext>.
+        Returns the (possibly new) path.
+        """
+        p = Path(path)
+        if p.suffix.lower() in self.VALID_ROM_EXTENSIONS:
+            return path  # Already correct, no rename needed
+
+        # Determine expected extension from platform slug
+        PLATFORM_EXT = {
+            'switch': '.nsp', 'nintendo-switch': '.nsp',
+            'ps3': '.iso', 'playstation-3': '.iso',
+            'ps2': '.iso', 'playstation-2': '.iso',
+            'ps1': '.bin', 'psx': '.bin', 'playstation': '.bin',
+            'psp': '.iso', 'playstation-portable': '.iso',
+            'gc': '.rvz', 'ngc': '.rvz', 'gamecube': '.rvz',
+            'wii': '.rvz', 'nintendo-wii': '.rvz',
+            'wiiu': '.wua', 'wii-u': '.wua',
+            'n64': '.z64', 'nintendo-64': '.z64',
+            'gba': '.gba', 'game-boy-advance': '.gba',
+            'nds': '.nds', 'nintendo-ds': '.nds',
+            'n3ds': '.3ds', '3ds': '.3ds',
+        }
+        platform = self.game.get('platform_slug', '').lower()
+        expected_ext = PLATFORM_EXT.get(platform, p.suffix or '.bin')
+
+        # Build clean filename from game name
+        import re
+        safe_name = re.sub(r'[^\w\s\-\.\(\)]', '', self.game.get('name', 'game'))
+        safe_name = safe_name.strip()[:60]
+        new_path = p.parent / f"{safe_name}{expected_ext}"
+
+        try:
+            p.rename(new_path)
+            self.main_window.log(f"🔧 Renamed {p.name} → {new_path.name}")
+            return str(new_path)
+        except Exception as e:
+            self.main_window.log(f"⚠️ Could not rename {p.name}: {e}")
+            return path  # Fall back to original path
+
     def _on_download_finished(self, ok, path):
         if not ok:
             download_registry.unregister(self.game['id'])
             return
-            
-        # If it's an archive and we are on Windows, or just need extraction
-        if path.endswith(('.zip', '.7z', '.iso')):
-            # Pre-fetch 7z.exe in background so extraction starts immediately
+
+        path = self._sanitize_downloaded_file(path)
+
+        # Only extract archives for Windows platform games.
+        # Emulators for all other platforms (PS1, PS2, PS3, Switch, N64, GBA, etc.)
+        # handle .zip, .7z, .iso, .chd and all other formats natively — extraction
+        # would corrupt the file structure or waste resources.
+        if self._is_windows and path.endswith(('.zip', '.7z')):
             from src.sevenzip import get_7zip_exe
             from PySide6.QtCore import QThread
-            
+
             class SevenZipFetcher(QThread):
                 ready = Signal(str)
                 def run(self):
                     exe = get_7zip_exe()
                     self.ready.emit(exe or "")
-            
+
             self.speed_label.setText("Preparing extractor...")
             self._sz_fetcher = SevenZipFetcher()
             self._sz_fetcher.ready.connect(lambda exe: self._start_extraction(path))
             self._sz_fetcher.start()
         else:
             download_registry.unregister(self.game['id'])
-            # Direct file download complete — mark local exists
             self.game['_local_exists'] = True
             self._update_button_states()
             self.main_window.library_tab.apply_filters()
