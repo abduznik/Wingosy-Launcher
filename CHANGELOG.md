@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.6] - 2026-03-21
+
+### Fixed
+- **ROM downloads: smart file selection** — multi-file games (e.g. Switch NSP + updates + DLC + artbooks) now correctly pick the base game file instead of blindly using the first file in the list. Files are ranked by platform extension priority; updates, DLC, amiibo JSON, artbooks, and PDFs are deprioritised.
+- **No extraction for non-Windows platforms** — PS1, PS2, PS3, Switch, N64, GBA and all retro platform downloads no longer trigger 7-Zip extraction. Emulators handle these formats natively. Extraction is now Windows-only. Fixes 7z exit code 2 error on PS3 ISOs.
+- **Filename sanitisation** — files with garbage server-side names (e.g. `COMICSANS18.LAF.txt`) are automatically renamed to `<Game Title>.<platform ext>` post-download. Filenames containing `[TitleID][v0](4.58 GB)` junk are also cleaned.
+- **ROM detection extended** — `resolve_local_rom_path` now recognises `.nsp`, `.xci`, `.nsz`, `.rvz`, `.gcz`, `.wbfs`, `.wua`, `.gba`, `.3ds`, `.cia`, `.nds`, `.sfc`, `.nes`, `.gen` and more. Adds game-title-based fuzzy search and bracket-stripping so renamed files are always found.
+- **`.nsz` warning** — attempting to download a `.nsz` Switch ROM now shows a warning that Eden cannot play this format directly, with the option to cancel or proceed.
+- **Updater** — removed unreliable auto-restart-via-batch-file logic. After a successful update download, the app now prompts the user to reopen manually instead of attempting to restart itself (which caused freezes and crashes on Windows).
+
+
 ## v0.6.5 (2026-03-21)
 ### Fixed
 - Server connection timeout no longer causes infinite startup hang: ConnectTimeout now fails fast and shows an error message instead of retrying with a 300s fallback

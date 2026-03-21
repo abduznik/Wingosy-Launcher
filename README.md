@@ -21,16 +21,15 @@
 - Parallel library loading for large collections
 - Configurable sync interval and log level
 
-## What's New in v0.6.5 (2026-03-21)
+## What's New in v0.6.6 (2026-03-21)
 ### Fixed
-- **Startup Hang on Unreachable Server**: Wingosy no longer freezes indefinitely if the RomM server is down — connection failures now report immediately
-- **Game Card Click Area**: Clicking anywhere on a game card (not just the image) now correctly opens the game detail panel
-- **No Cover Placeholder**: Games without cover art now show a properly styled full-size placeholder matching the detail panel
+- **Smart ROM File Selection**: Multi-file games (Switch NSP + updates + DLC) now correctly pick the base game file instead of the first metadata file found
+- **No Unnecessary Extraction**: Non-Windows platforms (PS1, PS2, PS3, Switch, N64, GBA, etc.) no longer trigger 7-Zip extraction, as emulators handle these formats natively
+- **Filename Sanitisation**: Garbage server-side names (e.g. `COMICSANS18.LAF`) are automatically renamed to clean title-based filenames post-download
+- **Extended ROM Detection**: `resolve_local_rom_path` now recognises 15+ modern formats (including `.nsp`, `.xci`, `.nsz`, `.rvz`, `.wua`) and includes fuzzy game-title matching for renamed files
+- **.nsz Warning**: Added a warning when attempting to download Switch .nsz files, which require external decompression before they can be played in Eden
+- **Simplified Updater**: Removed unreliable auto-restart logic; the app now clearly prompts the user to reopen manually after a successful update download
 
-### Changed
-- **Uniform Card Grid**: Game cards are now all the same height for a clean, orderly library layout
-- **Eden Emulator Source**: Updated to the official Gitea release after the GitHub mirror was taken down
-- **RetroArch Download URL**: Fixed broken download link (wrong filename)
 
 ## What's New in v0.6.3 (2026-03-14)
 ### Added
