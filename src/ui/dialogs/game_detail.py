@@ -368,6 +368,22 @@ class GameDetailPanel(QWidget):
 
     def download_rom(self, file_obj):
         if not file_obj: return
+
+        # Warn if file is .nsz — Eden does not support this format
+        file_name = file_obj.get('file_name', '')
+        if file_name.lower().endswith('.nsz'):
+            reply = QMessageBox.warning(
+                self, "Unsupported Format — Wingosy",
+                f"<b>{file_name}</b><br><br>"
+                f".nsz files are compressed Switch ROMs that Eden (and most Switch emulators) "
+                f"cannot play directly.<br><br>"
+                f"You will need to decompress it with a tool like nsz.exe before it can be launched.<br><br>"
+                f"Download anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
         
         # Determine target path
         if self._is_windows:
@@ -392,7 +408,7 @@ class GameDetailPanel(QWidget):
     # Known ROM extensions that are legitimate — no rename needed
     VALID_ROM_EXTENSIONS = {
         '.iso', '.chd', '.cso', '.pbp', '.bin', '.img',   # disc images
-        '.nsp', '.xci', '.nsz',                            # Switch
+        '.nsp', '.xci',                            # Switch
         '.zip', '.7z', '.rar',                             # archives
         '.rvz', '.gcz', '.wbfs', '.wia',                   # GameCube/Wii
         '.wua', '.rpx', '.wud',                            # Wii U
@@ -408,15 +424,15 @@ class GameDetailPanel(QWidget):
 
     def _sanitize_downloaded_file(self, path: str) -> str:
         """
-        If the downloaded file has an unrecognized extension (e.g. COMICSANS18.LAF),
-        rename it to a clean name: <game_title_slug>.<expected_ext>.
+        Rename downloaded files to a clean game-title-based name if:
+        - The extension is unrecognized (e.g. COMICSANS18.LAF), OR
+        - The filename contains junk like [TitleID][v0](4.58 GB) after the title
         Returns the (possibly new) path.
         """
+        import re
         p = Path(path)
-        if p.suffix.lower() in self.VALID_ROM_EXTENSIONS:
-            return path  # Already correct, no rename needed
+        ext = p.suffix.lower()
 
-        # Determine expected extension from platform slug
         PLATFORM_EXT = {
             'switch': '.nsp', 'nintendo-switch': '.nsp',
             'ps3': '.iso', 'playstation-3': '.iso',
@@ -432,13 +448,32 @@ class GameDetailPanel(QWidget):
             'n3ds': '.3ds', '3ds': '.3ds',
         }
         platform = self.game.get('platform_slug', '').lower()
-        expected_ext = PLATFORM_EXT.get(platform, p.suffix or '.bin')
 
-        # Build clean filename from game name
-        import re
-        safe_name = re.sub(r'[^\w\s\-\.\(\)]', '', self.game.get('name', 'game'))
-        safe_name = safe_name.strip()[:60]
-        new_path = p.parent / f"{safe_name}{expected_ext}"
+        # Determine if rename is needed:
+        # Case A — unrecognized extension
+        needs_rename = ext not in self.VALID_ROM_EXTENSIONS
+        # Case B — valid extension but filename has junk brackets/parens after the title
+        if not needs_rename and re.search(r'[\[\(]', p.stem):
+            needs_rename = True
+
+        if not needs_rename:
+            return path
+
+        # Build clean filename from game name (preserve spaces, strip filesystem-unsafe chars only)
+        game_name = self.game.get('name', 'game')
+        safe_name = re.sub(r'[\\/:*?"<>|]', '', game_name).strip()[:80]
+
+        # Pick extension: keep original if valid, otherwise use platform default
+        if ext in self.VALID_ROM_EXTENSIONS:
+            final_ext = ext
+        else:
+            final_ext = PLATFORM_EXT.get(platform, ext or '.bin')
+
+        new_path = p.parent / f"{safe_name}{final_ext}"
+
+        # Avoid overwriting an existing file with a different rom_id
+        if new_path.exists() and new_path != p:
+            return path
 
         try:
             p.rename(new_path)
@@ -446,7 +481,7 @@ class GameDetailPanel(QWidget):
             return str(new_path)
         except Exception as e:
             self.main_window.log(f"⚠️ Could not rename {p.name}: {e}")
-            return path  # Fall back to original path
+            return path
 
     def _on_download_finished(self, ok, path):
         if not ok:
@@ -666,7 +701,63 @@ class GameDetailPanel(QWidget):
         if not files:
             return
 
-        file_obj = files[0]
+        # --- Smart file selection ---
+        # Priority order for picking the base game file:
+        # 1. Prefer files whose name contains the game title (case-insensitive)
+        # 2. Among those, prefer known ROM extensions for this platform
+        # 3. Fall back to largest file overall (most likely to be the actual game)
+
+        platform = self.game.get('platform_slug', '').lower()
+
+        # Extensions considered "base game" files per platform family
+        BASE_GAME_EXTENSIONS = {
+            'switch': ['.nsp', '.xci', '.nsz'],
+            'nintendo-switch': ['.nsp', '.xci', '.nsz'],
+            'ps3': ['.iso', '.pkg'],
+            'playstation-3': ['.iso', '.pkg'],
+            'ps2': ['.iso', '.chd', '.bin'],
+            'playstation-2': ['.iso', '.chd', '.bin'],
+            'ps1': ['.bin', '.iso', '.chd'],
+            'psx': ['.bin', '.iso', '.chd'],
+            'playstation': ['.bin', '.iso', '.chd'],
+            'psp': ['.iso', '.cso'],
+            'playstation-portable': ['.iso', '.cso'],
+            'gc': ['.rvz', '.iso', '.gcz'],
+            'ngc': ['.rvz', '.iso', '.gcz'],
+            'wii': ['.rvz', '.iso', '.wbfs'],
+            'nintendo-wii': ['.rvz', '.iso', '.wbfs'],
+            'wiiu': ['.wua', '.wud'],
+            'wii-u': ['.wua', '.wud'],
+            'n64': ['.z64', '.n64', '.v64'],
+            'nintendo-64': ['.z64', '.n64', '.v64'],
+            'gba': ['.gba'],
+            'nds': ['.nds'],
+            'n3ds': ['.3ds', '.cia'],
+            '3ds': ['.3ds', '.cia'],
+        }
+        preferred_exts = BASE_GAME_EXTENSIONS.get(platform, [])
+
+        def file_priority(f):
+            name = f.get('file_name', '').lower()
+            ext = Path(name).suffix.lower()
+            size = f.get('file_size_bytes', 0) or 0
+            # Strongly deprioritize obvious non-game files
+            if any(skip in name for skip in ['amiibo', 'artbook', 'book', 'manual', 'readme',
+                                              'update', 'patch', 'dlc', 'transfer tool',
+                                              '.pdf', '.txt', '.json', '.7z', '.zip']):
+                if ext not in preferred_exts:
+                    return (3, -size)
+            # Tier 1: matches preferred extension
+            if ext in preferred_exts:
+                # Within tier 1, deprioritize files that look like updates/DLC
+                if any(kw in name for kw in ['update', 'patch', 'dlc', '[dlc', '[upd']):
+                    return (1, -size)
+                return (0, -size)
+            # Tier 2: unknown extension but large file
+            return (2, -size)
+
+        sorted_files = sorted(files, key=file_priority)
+        file_obj = sorted_files[0]
         rom_name = file_obj.get("file_name", "")
 
         # Windows-specific pre-download checks

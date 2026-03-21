@@ -65,8 +65,9 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
     # 3. Fuzzy extension matching fallbacks
     # Common disc and ROM formats: .chd, .iso, .cso, .pbp, .bin, .img, .mdf, .z64, .n64, .v64
     extensions = ['.chd', '.iso', '.cso', '.pbp', '.bin', '.img', '.mdf', '.z64', '.n64', '.v64',
-                  '.nsp', '.xci', '.nsz', '.rvz', '.gcz', '.wbfs', '.wua', '.3ds', '.cia',
-                  '.nds', '.gba', '.gbc', '.gb', '.sfc', '.smc', '.nes', '.gen', '.md']
+                  '.nsp', '.xci', '.nsz', '.rvz', '.gcz', '.wbfs', '.wia', '.wua', '.rpx',
+                  '.3ds', '.cia', '.nds', '.gba', '.gbc', '.gb', '.sfc', '.smc', '.nes',
+                  '.gen', '.md', '.smd']
     for ext in extensions:
         if ext in excluded_exts: continue
         candidate = stem + ext
@@ -77,14 +78,21 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
         if p_cand.exists(): return p_cand
 
     # 3b. Game-name-based fuzzy search — catches files renamed post-download
-    # (e.g. server sent "COMICSANS18.LAF" but we renamed it to "Grim Fandango Remastered.nsp")
+    # Also tries stem prefix before first bracket for RomM-style filenames
+    # e.g. "Grim Fandango Remastered [0100B7900B024000][v0] (4.58 GB).nsz"
     game_name = game.get('name', '')
     if game_name and platform:
-        safe_game_name = re.sub(r'[^\w\s\-\.\(\)]', '', game_name).strip()
-        if safe_game_name:
+        import re as _re
+        safe_game_name = _re.sub(r'[\\/:*?"<>|]', '', game_name).strip()
+        # Also try the fs_name stem stripped of brackets/IDs
+        fs_stem = Path(rom_name).stem
+        fs_clean = _re.sub(r'\s*[\[\(][^\]\)]*[\]\)]\s*', '', fs_stem).strip()
+        name_candidates = {safe_game_name, fs_clean}
+        name_candidates.discard('')
+        for name_candidate in name_candidates:
             for ext in extensions:
                 if ext in excluded_exts: continue
-                candidate = safe_game_name + ext
+                candidate = name_candidate + ext
                 p_cand = base_path / platform / candidate
                 if p_cand.exists(): return p_cand
                 p_cand = base_path / candidate
@@ -100,7 +108,11 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
     # Only do this if base_rom is a valid directory to avoid hangs
     if base_path.is_dir():
         # Build set of all candidate names including original
+        game_name = game.get('name', '')
+        safe_game_name = re.sub(r'[^\w\s\-\.\(\)]', '', game_name).strip() if game_name else ''
         all_candidates = {rom_name} | {stem + ext for ext in extensions} | {stem}
+        if safe_game_name:
+            all_candidates |= {safe_game_name + ext for ext in extensions}
         
         for root, dirs, files in os.walk(base_rom):
             # Check files first

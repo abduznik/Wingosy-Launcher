@@ -452,48 +452,18 @@ class SettingsTab(QWidget):
     def on_self_update_finished(self, success, msg):
         if success:
             self.pbar.setValue(100)
-            QMessageBox.information(self, "Done", "Update installed. Restarting...")
-            exe = str(Path(sys.executable).resolve())
-            
-            if sys.platform == "win32":
-                # Implementation of the "Bridge" restart:
-                # We write a temporary batch file that waits for THIS process PID to die, 
-                # then starts the new one.
-                pid = os.getpid()
-                bat_path = Path.home() / ".wingosy" / "restart_bridge.bat"
-                bat_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # The batch logic:
-                # 1. Loop until tasklist no longer shows our PID
-                # 2. Start the new EXE
-                # 3. Self-delete
-                bat_content = f"""@echo off
-:wait
-tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}">NUL
-if "%ERRORLEVEL%"=="0" (
-    timeout /t 1 /nobreak >NUL
-    goto wait
-)
-timeout /t 1 /nobreak >NUL
-start "" "{exe}"
-del "%~f0"
-"""
-                bat_path.write_text(bat_content, encoding="utf-8")
-                
-                subprocess.Popen(
-                    ["cmd.exe", "/c", str(bat_path)],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS,
-                    close_fds=True
-                )
-            else:
-                subprocess.Popen([exe], close_fds=True)
-                
-            QApplication.instance().quit()
-            sys.exit(0)
+            QMessageBox.information(
+                self, "Update Ready — Wingosy",
+                "✅ Update downloaded successfully.\n\n"
+                "Please close and reopen Wingosy to use the new version."
+            )
+            self.up_btn.setText("Restart to apply update")
+            self.up_btn.setEnabled(False)
+            self.pbar.setVisible(False)
         else:
             self.up_btn.setEnabled(True)
             self.pbar.setVisible(False)
-            QMessageBox.critical(self, "Failed", msg)
+            QMessageBox.critical(self, "Update Failed — Wingosy", msg)
             
     def do_logout(self):
         if QMessageBox.question(self, "Log Out", "Are you sure you want to log out?") == QMessageBox.Yes:

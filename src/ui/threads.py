@@ -571,9 +571,9 @@ class SelfUpdateThread(QThread):
                         if total > 0:
                             self.progress.emit(int((downloaded / total) * 100))
 
-            old_exe = self.current_exe_path.parent / "Wingosy_old.exe"      
-            if old_exe.exists(): old_exe.unlink()
-            os.rename(self.current_exe_path, old_exe)
+            # Overwrite current exe directly — user will reopen manually
+            if self.current_exe_path.exists():
+                self.current_exe_path.unlink()
             os.rename(temp_exe, self.current_exe_path)
             self.finished.emit(True, "Update downloaded successfully.")     
         except Exception as e:
