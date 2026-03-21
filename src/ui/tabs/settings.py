@@ -452,14 +452,15 @@ class SettingsTab(QWidget):
     def on_self_update_finished(self, success, msg):
         if success:
             self.pbar.setValue(100)
+            self.pbar.setVisible(False)
+            update_path = msg
             QMessageBox.information(
                 self, "Update Ready — Wingosy",
-                "✅ Update downloaded successfully.\n\n"
-                "Please close and reopen Wingosy to use the new version."
+                f"Update downloaded to:\n{update_path}\n\n"
+                f"Please close Wingosy and run the new file to apply the update."
             )
-            self.up_btn.setText("Restart to apply update")
+            self.up_btn.setText("Update ready — please reopen")
             self.up_btn.setEnabled(False)
-            self.pbar.setVisible(False)
         else:
             self.up_btn.setEnabled(True)
             self.pbar.setVisible(False)
