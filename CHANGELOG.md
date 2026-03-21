@@ -1,3 +1,11 @@
+## [0.6.7] - 2026-03-21
+
+### Fixed
+- **Multi-file ROM downloads** — games with multiple files (e.g. Switch base game + update + DLC) now download and extract correctly. RomM packages them as a zip served under the first file's name; the app now detects the actual zip format via file content rather than extension, extracts into a named subfolder, and picks the largest `.nsp`/`.xci` inside for launch (base game is always the biggest file).
+- **False extraction error** — 7z exit code 2 (warnings/skipped files) no longer shows an error dialog when extraction actually succeeded.
+- **ROM detection** — `resolve_local_rom_path` now recognises `.nsp`, `.xci`, `.rvz`, `.gba`, `.3ds` and 15+ additional modern formats; adds fuzzy folder name matching and largest-file preference when multiple candidates exist.
+- **Download stability** — thread reference kept in `active_threads` to prevent garbage collection mid-download on slower connections.
+
 # Changelog
 
 ## [0.6.6] - 2026-03-21
