@@ -366,144 +366,111 @@ class GameDetailPanel(QWidget):
             else:
                 self.speed_label.setText("Extracting...")
 
-    def download_rom(self, file_obj):
-        if not file_obj: return
+    def _on_download_clicked(self):
+        rom_id = str(self.game["id"])
+        existing = download_registry.get(rom_id)
+        if existing and existing.get("status") in ("downloading", "extracting"):
+            return
 
-        # Warn if file is .nsz — Eden does not support this format
+        windows_dir = self.config.get("windows_games_dir", "")
+        if self._is_windows and not windows_dir:
+            directory = QFileDialog.getExistingDirectory(self, "Select Windows Games Folder")
+            if directory:
+                self.config.set("windows_games_dir", directory)
+                windows_dir = directory
+            else:
+                return
+
+        files = self.game.get('files', [])
+        if not files:
+            return
+
+        file_obj = files[0]
         file_name = file_obj.get('file_name', '')
+
         if file_name.lower().endswith('.nsz'):
             reply = QMessageBox.warning(
                 self, "Unsupported Format — Wingosy",
                 f"<b>{file_name}</b><br><br>"
-                f".nsz files are compressed Switch ROMs that Eden (and most Switch emulators) "
-                f"cannot play directly.<br><br>"
-                f"You will need to decompress it with a tool like nsz.exe before it can be launched.<br><br>"
+                f".nsz files cannot be played by Eden directly.<br><br>"
                 f"Download anyway?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
             if reply == QMessageBox.No:
                 return
-        
-        # Determine target path
+
+        if self._is_windows and windows_dir:
+            archive_path = Path(windows_dir) / file_name
+            extracted_dir = Path(windows_dir) / Path(file_name).stem
+            if extracted_dir.exists() and any(extracted_dir.rglob("*.exe")):
+                QMessageBox.information(self, "Already Installed — Wingosy",
+                    f"{self.game['name']} is already installed at:\n{extracted_dir}")
+                self._update_button_states()
+                return
+            if archive_path.exists():
+                reply = QMessageBox.question(self, "Archive Already Downloaded — Wingosy",
+                    f"{file_name} already exists.\n\nExtract now?",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
+                if reply == QMessageBox.Cancel:
+                    return
+                if reply == QMessageBox.Yes:
+                    self._start_extraction(str(archive_path))
+                    return
+
+        is_multi = len(files) > 1
+        self.download_rom(file_obj, multi_file=is_multi)
+
+    def download_rom(self, file_obj, multi_file=False):
+        if not file_obj:
+            return
+
         if self._is_windows:
-            target_dir = Path(self.config.get("windows_games_dir"))
-            target_path = target_dir / file_obj['file_name']
+            base_dir = Path(self.config.get("windows_games_dir"))
         else:
-            target_dir = Path(self.config.get("base_rom_path")) / self.game.get('platform_slug')
-            target_path = target_dir / file_obj['file_name']
-            
-        os.makedirs(target_dir, exist_ok=True)
-        
-        self.dl_thread = RomDownloader(self.client, self.game['id'], file_obj['file_name'], str(target_path))
+            base_dir = Path(self.config.get("base_rom_path")) / self.game.get('platform_slug')
+        os.makedirs(base_dir, exist_ok=True)
+
+        file_name = file_obj.get('file_name', 'rom')
+        target_path = str(base_dir / file_name)
+        is_archive = file_name.lower().endswith(('.zip', '.7z'))
+
+        self.dl_thread = RomDownloader(self.client, self.game['id'], file_name, target_path)
         download_registry.register_download(self.game['id'], self.game['name'], self.dl_thread)
-        
         self.dl_thread.progress.connect(lambda d, t, s: download_registry.update_progress(self.game['id'], d, t, s))
-        self.dl_thread.finished.connect(lambda ok, p: self._on_download_finished(ok, p))
-        
+        self.dl_thread.finished.connect(
+            lambda ok, p: self._on_download_finished(ok, p, extract_after=multi_file or self._is_windows)
+        )
+        self.dl_thread.finished.connect(
+            lambda ok, p, t=self.dl_thread: self.main_window.active_threads.remove(t) if t in self.main_window.active_threads else None
+        )
         self.main_window.download_queue.add_download(self.game['name'], self.dl_thread, "download", self.game['id'])
         self.dl_thread.start()
+        self.main_window.active_threads.append(self.dl_thread)
         self._reconnect_active_download()
 
-    # Known ROM extensions that are legitimate — no rename needed
-    VALID_ROM_EXTENSIONS = {
-        '.iso', '.chd', '.cso', '.pbp', '.bin', '.img',   # disc images
-        '.nsp', '.xci',                            # Switch
-        '.zip', '.7z', '.rar',                             # archives
-        '.rvz', '.gcz', '.wbfs', '.wia',                   # GameCube/Wii
-        '.wua', '.rpx', '.wud',                            # Wii U
-        '.3ds', '.cia', '.nds',                            # Nintendo handhelds
-        '.n64', '.z64', '.v64',                            # N64
-        '.gba', '.gbc', '.gb',                             # Game Boy
-        '.sfc', '.smc', '.snes',                           # SNES
-        '.nes', '.fds',                                    # NES
-        '.gen', '.md', '.smd',                             # Genesis
-        '.psp',                                            # PSP saves (not ROM)
-        '.exe',                                            # Windows
-    }
-
-    def _sanitize_downloaded_file(self, path: str) -> str:
-        """
-        Rename downloaded files to a clean game-title-based name if:
-        - The extension is unrecognized (e.g. COMICSANS18.LAF), OR
-        - The filename contains junk like [TitleID][v0](4.58 GB) after the title
-        Returns the (possibly new) path.
-        """
-        import re
-        p = Path(path)
-        ext = p.suffix.lower()
-
-        PLATFORM_EXT = {
-            'switch': '.nsp', 'nintendo-switch': '.nsp',
-            'ps3': '.iso', 'playstation-3': '.iso',
-            'ps2': '.iso', 'playstation-2': '.iso',
-            'ps1': '.bin', 'psx': '.bin', 'playstation': '.bin',
-            'psp': '.iso', 'playstation-portable': '.iso',
-            'gc': '.rvz', 'ngc': '.rvz', 'gamecube': '.rvz',
-            'wii': '.rvz', 'nintendo-wii': '.rvz',
-            'wiiu': '.wua', 'wii-u': '.wua',
-            'n64': '.z64', 'nintendo-64': '.z64',
-            'gba': '.gba', 'game-boy-advance': '.gba',
-            'nds': '.nds', 'nintendo-ds': '.nds',
-            'n3ds': '.3ds', '3ds': '.3ds',
-        }
-        platform = self.game.get('platform_slug', '').lower()
-
-        # Determine if rename is needed:
-        # Case A — unrecognized extension
-        needs_rename = ext not in self.VALID_ROM_EXTENSIONS
-        # Case B — valid extension but filename has junk brackets/parens after the title
-        if not needs_rename and re.search(r'[\[\(]', p.stem):
-            needs_rename = True
-
-        if not needs_rename:
-            return path
-
-        # Build clean filename from game name (preserve spaces, strip filesystem-unsafe chars only)
-        game_name = self.game.get('name', 'game')
-        safe_name = re.sub(r'[\\/:*?"<>|]', '', game_name).strip()[:80]
-
-        # Pick extension: keep original if valid, otherwise use platform default
-        if ext in self.VALID_ROM_EXTENSIONS:
-            final_ext = ext
-        else:
-            final_ext = PLATFORM_EXT.get(platform, ext or '.bin')
-
-        new_path = p.parent / f"{safe_name}{final_ext}"
-
-        # Avoid overwriting an existing file with a different rom_id
-        if new_path.exists() and new_path != p:
-            return path
-
-        try:
-            p.rename(new_path)
-            self.main_window.log(f"🔧 Renamed {p.name} → {new_path.name}")
-            return str(new_path)
-        except Exception as e:
-            self.main_window.log(f"⚠️ Could not rename {p.name}: {e}")
-            return path
-
-    def _on_download_finished(self, ok, path):
+    def _on_download_finished(self, ok, path, extract_after=False):
         if not ok:
             download_registry.unregister(self.game['id'])
             return
 
-        path = self._sanitize_downloaded_file(path)
+        # Check if the file is actually a zip archive using Python stdlib.
+        # RomM multi-file games are served as zip but may have any extension.
+        # Only extract if it IS a zip — never try to extract real NSP/ISO/etc.
+        import zipfile as _zf
+        try:
+            actually_zip = _zf.is_zipfile(path)
+        except Exception:
+            actually_zip = False
 
-        # Only extract archives for Windows platform games.
-        # Emulators for all other platforms (PS1, PS2, PS3, Switch, N64, GBA, etc.)
-        # handle .zip, .7z, .iso, .chd and all other formats natively — extraction
-        # would corrupt the file structure or waste resources.
-        if self._is_windows and path.endswith(('.zip', '.7z')):
+        if actually_zip:
             from src.sevenzip import get_7zip_exe
             from PySide6.QtCore import QThread
-
             class SevenZipFetcher(QThread):
                 ready = Signal(str)
                 def run(self):
                     exe = get_7zip_exe()
                     self.ready.emit(exe or "")
-
             self.speed_label.setText("Preparing extractor...")
             self._sz_fetcher = SevenZipFetcher()
             self._sz_fetcher.ready.connect(lambda exe: self._start_extraction(path))
@@ -513,6 +480,7 @@ class GameDetailPanel(QWidget):
             self.game['_local_exists'] = True
             self._update_button_states()
             self.main_window.library_tab.apply_filters()
+
 
     def _on_extraction_finished(self, path):
         download_registry.unregister(self.game['id'])
@@ -680,120 +648,13 @@ class GameDetailPanel(QWidget):
                     self.main_window.library_tab.apply_filters()
             except Exception as e:
                 QMessageBox.critical(self, "Error — Wingosy", str(e))
-                
-    def _on_download_clicked(self):
-        # Prevent duplicate downloads
-        rom_id = str(self.game["id"])
-        existing = download_registry.get(rom_id)
-        if existing and existing.get("status") in ("downloading", "extracting"):
-            return  # Already in progress, ignore click
-
-        windows_dir = self.config.get("windows_games_dir", "")
-        if self._is_windows and not windows_dir:
-            directory = QFileDialog.getExistingDirectory(self, "Select Windows Games Folder")
-            if directory:
-                self.config.set("windows_games_dir", directory)
-                windows_dir = directory
-            else:
-                return
-
-        files = self.game.get('files', [])
-        if not files:
-            return
-
-        # --- Smart file selection ---
-        # Priority order for picking the base game file:
-        # 1. Prefer files whose name contains the game title (case-insensitive)
-        # 2. Among those, prefer known ROM extensions for this platform
-        # 3. Fall back to largest file overall (most likely to be the actual game)
-
-        platform = self.game.get('platform_slug', '').lower()
-
-        # Extensions considered "base game" files per platform family
-        BASE_GAME_EXTENSIONS = {
-            'switch': ['.nsp', '.xci', '.nsz'],
-            'nintendo-switch': ['.nsp', '.xci', '.nsz'],
-            'ps3': ['.iso', '.pkg'],
-            'playstation-3': ['.iso', '.pkg'],
-            'ps2': ['.iso', '.chd', '.bin'],
-            'playstation-2': ['.iso', '.chd', '.bin'],
-            'ps1': ['.bin', '.iso', '.chd'],
-            'psx': ['.bin', '.iso', '.chd'],
-            'playstation': ['.bin', '.iso', '.chd'],
-            'psp': ['.iso', '.cso'],
-            'playstation-portable': ['.iso', '.cso'],
-            'gc': ['.rvz', '.iso', '.gcz'],
-            'ngc': ['.rvz', '.iso', '.gcz'],
-            'wii': ['.rvz', '.iso', '.wbfs'],
-            'nintendo-wii': ['.rvz', '.iso', '.wbfs'],
-            'wiiu': ['.wua', '.wud'],
-            'wii-u': ['.wua', '.wud'],
-            'n64': ['.z64', '.n64', '.v64'],
-            'nintendo-64': ['.z64', '.n64', '.v64'],
-            'gba': ['.gba'],
-            'nds': ['.nds'],
-            'n3ds': ['.3ds', '.cia'],
-            '3ds': ['.3ds', '.cia'],
-        }
-        preferred_exts = BASE_GAME_EXTENSIONS.get(platform, [])
-
-        def file_priority(f):
-            name = f.get('file_name', '').lower()
-            ext = Path(name).suffix.lower()
-            size = f.get('file_size_bytes', 0) or 0
-            # Strongly deprioritize obvious non-game files
-            if any(skip in name for skip in ['amiibo', 'artbook', 'book', 'manual', 'readme',
-                                              'update', 'patch', 'dlc', 'transfer tool',
-                                              '.pdf', '.txt', '.json', '.7z', '.zip']):
-                if ext not in preferred_exts:
-                    return (3, -size)
-            # Tier 1: matches preferred extension
-            if ext in preferred_exts:
-                # Within tier 1, deprioritize files that look like updates/DLC
-                if any(kw in name for kw in ['update', 'patch', 'dlc', '[dlc', '[upd']):
-                    return (1, -size)
-                return (0, -size)
-            # Tier 2: unknown extension but large file
-            return (2, -size)
-
-        sorted_files = sorted(files, key=file_priority)
-        file_obj = sorted_files[0]
-        rom_name = file_obj.get("file_name", "")
-
-        # Windows-specific pre-download checks
-        if self._is_windows and windows_dir:
-            archive_path = Path(windows_dir) / rom_name
-            extracted_dir = Path(windows_dir) / Path(rom_name).stem
-
-            # 1. Check if already installed
-            if extracted_dir.exists() and any(extracted_dir.rglob("*.exe")):
-                QMessageBox.information(
-                    self, "Already Installed — Wingosy",
-                    f"{self.game['name']} appears to already be installed at:\n{extracted_dir}\n\nUse the Play button to launch it."
-                )
-                self._update_button_states()
-                return
-
-            # 2. Check if archive exists
-            if archive_path.exists():
-                reply = QMessageBox.question(
-                    self, "Archive Already Downloaded — Wingosy",
-                    f"{rom_name} already exists in your Windows Games folder.\n\nWould you like to extract it now instead of downloading again?",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                    QMessageBox.Yes
-                )
-                if reply == QMessageBox.Cancel:
-                    return
-                if reply == QMessageBox.Yes:
-                    self._start_extraction(str(archive_path))
-                    return
-
-        self.download_rom(file_obj)
 
     def _start_extraction(self, path):
-        target_dir = Path(path).parent
-        if self._is_windows:
-            target_dir = target_dir / Path(path).stem
+        import re as _re
+        # Always extract into a named subfolder — game name for zip archives,
+        # stem for Windows archives. Never extract into the platform root.
+        safe_name = _re.sub(r'[\\/:*?"<>|\']', '', self.game.get('name', 'game')).strip()
+        target_dir = Path(path).parent / safe_name
 
         rom_id = str(self.game['id'])
         self.extract_thread = ExtractionThread(path, str(target_dir), rom_id=rom_id)
@@ -801,7 +662,12 @@ class GameDetailPanel(QWidget):
 
         self.extract_thread.progress.connect(lambda d, t: download_registry.update_progress(self.game['id'], d, t))
         self.extract_thread.finished.connect(self._on_extraction_finished)
-        self.extract_thread.error.connect(lambda msg: QMessageBox.critical(self, "Extraction Error", msg))
+        # Exit code 2 from 7z means warnings (skipped files etc.) but extraction
+        # succeeded — only show error for genuinely fatal failures
+        self.extract_thread.error.connect(lambda msg: (
+            None if '2' in msg and self.extract_thread.target_dir.exists()
+            else QMessageBox.critical(self, "Extraction Error — Wingosy", msg)
+        ))
 
         self.main_window.download_queue.add_download(self.game['name'], self.extract_thread, "extraction", self.game['id'])
         self.extract_thread.start()
@@ -967,6 +833,18 @@ class GameDetailPanel(QWidget):
 
     def play_game(self):
         local_rom = self._get_local_rom_path()
+
+        # If local_rom is a folder (multi-file extracted game), find the largest
+        # .nsp/.xci inside — that's the base game (updates/DLC are smaller)
+        if local_rom and local_rom.is_dir():
+            candidates = list(local_rom.rglob('*.nsp')) + list(local_rom.rglob('*.xci'))
+            if candidates:
+                local_rom = max(candidates, key=lambda p: p.stat().st_size)
+            else:
+                # Fallback: any file in the folder
+                all_files = [p for p in local_rom.rglob('*') if p.is_file()]
+                if all_files:
+                    local_rom = max(all_files, key=lambda p: p.stat().st_size)
         if not local_rom or not local_rom.exists():
             QMessageBox.warning(self, "Error — Wingosy", "Could not find the local ROM file. Please download it first.")
             return

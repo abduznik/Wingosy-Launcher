@@ -293,27 +293,34 @@ class RomMClient:
 
     def download_rom(self, rom_id, file_name, target_path, progress_cb=None, thread=None):
         try:
-            encoded_name = quote(file_name)
-            url = f"{self.host}/api/roms/{rom_id}/content/{encoded_name}"
-            
-            try:
-                r = requests.get(url, headers=self.get_auth_headers(), stream=True, 
+            if file_name:
+                encoded_name = quote(file_name)
+                url = f"{self.host}/api/roms/{rom_id}/content/{encoded_name}"
+                r = requests.get(url, headers=self.get_auth_headers(), stream=True,
                                  timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
                 if r.status_code == 404:
-                    # Fallback to /download path ONLY if 404
                     url = f"{self.host}/api/roms/{rom_id}/download"
-                    r = requests.get(url, headers=self.get_auth_headers(), stream=True, 
+                    r = requests.get(url, headers=self.get_auth_headers(), stream=True,
                                      timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
-            except (requests.exceptions.ConnectTimeout,
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.RequestException) as e:
-                print(f"[API] Network error in download_rom: {e}")
-                return False
+            else:
+                # Multi-file game — fetch all files as a single zip
+                url = f"{self.host}/api/roms/{rom_id}/download"
+                print(f"[API] Multi-file download URL: {url}")
+                r = requests.get(url, headers=self.get_auth_headers(), stream=True,
+                                 timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
+                print(f"[API] Multi-file response status: {r.status_code}")
+                print(f"[API] Multi-file response headers: {dict(r.headers)}")
+        except (requests.exceptions.ConnectTimeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.RequestException) as e:
+            print(f"[API] Network error in download_rom: {e}")
+            return False
 
-            if r.status_code != 200:
-                return False
+        if r.status_code != 200:
+            return False
 
+        try:
             total = int(r.headers.get('content-length', 0))
             downloaded = 0
             start = time.time()

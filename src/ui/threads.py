@@ -462,6 +462,81 @@ class RomDownloader(QThread):
         else:
             self.finished.emit(True, self.target_path)
 
+class MultiFileDownloader(QThread):
+    """
+    Downloads multiple files for a single ROM sequentially into a folder.
+    Emits progress as (bytes_done_this_file, total_bytes_this_file, speed).
+    Emits file_started(index, total_files, file_name) when each file begins.
+    Emits finished(success, folder_path).
+    """
+    progress   = Signal(float, float, float)  # downloaded, total, speed
+    file_started = Signal(int, int, str)       # file_index, total_files, file_name
+    finished   = Signal(bool, str)             # success, folder_path
+    cancelled  = Signal()
+
+    def __init__(self, client, rom_id, files, target_dir):
+        super().__init__()
+        self.client     = client
+        self.rom_id     = rom_id
+        self.files      = files        # list of file dicts with 'file_name' key
+        self.target_dir = Path(target_dir)
+        self.file_path  = str(target_dir)
+        self._cancelled = False
+        self._last_time = 0.0
+        self._last_bytes = 0.0
+
+    def cancel(self):
+        self._cancelled = True
+        self.requestInterruption()
+
+    def run(self):
+        try:
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+            total_files = len(self.files)
+
+            for i, file_obj in enumerate(self.files):
+                if self._cancelled or self.isInterruptionRequested():
+                    if self.rom_id:
+                        download_registry.unregister(self.rom_id)
+                    self.cancelled.emit()
+                    return
+
+                file_name = file_obj.get('file_name', f'file_{i}')
+                target_path = self.target_dir / file_name
+                self.file_started.emit(i + 1, total_files, file_name)
+                self._last_time = time.time()
+                self._last_bytes = 0.0
+
+                def cb(d, t, s, self=self):
+                    if not self._cancelled and not self.isInterruptionRequested():
+                        now = time.time()
+                        elapsed = now - self._last_time
+                        if elapsed >= 0.5:
+                            speed = (d - self._last_bytes) / elapsed
+                            self._last_bytes = d
+                            self._last_time = now
+                            self.progress.emit(float(d), float(t), float(speed))
+                        else:
+                            self.progress.emit(float(d), float(t), 0.0)
+
+                success = self.client.download_rom(
+                    self.rom_id, file_name, str(target_path), cb, thread=self
+                )
+
+                if not success:
+                    if self.rom_id:
+                        download_registry.unregister(self.rom_id)
+                    self.finished.emit(False, str(self.target_dir))
+                    return
+
+            self.finished.emit(True, str(self.target_dir))
+
+        except Exception as e:
+            logging.error(f"[MultiFileDownloader] {e}")
+            if self.rom_id:
+                download_registry.unregister(self.rom_id)
+            self.finished.emit(False, str(self.target_dir))
+
 class BiosDownloader(QThread):
     progress = Signal(float, float, float)
     finished = Signal(bool, str)

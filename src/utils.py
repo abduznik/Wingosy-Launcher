@@ -98,11 +98,24 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
                 p_cand = base_path / candidate
                 if p_cand.exists(): return p_cand
 
-    # 4. PS3/Folder-based fallback (e.g. RPCS3 games stored as folders)
+    # 4. Folder-based fallback — exact stem, then fuzzy game-name match
     if platform:
         p_folder = base_path / platform / stem
         if p_folder.exists() and p_folder.is_dir():
             return p_folder
+        # Fuzzy: find any folder under platform dir whose name is close to game title
+        game_name = game.get('name', '')
+        if game_name:
+            import re as _re
+            safe = _re.sub(r'[\\/:*?"<>|\']', '', game_name).strip().lower()
+            plat_dir = base_path / platform
+            if plat_dir.is_dir():
+                for d in plat_dir.iterdir():
+                    if d.is_dir():
+                        d_clean = _re.sub(r'[\\/:*?"<>|\']', '', d.name).strip().lower()
+                        # Match if folder name starts with or contains the game title
+                        if d_clean == safe or d_clean.startswith(safe[:20]):
+                            return d
         
     # 5. Recursive Search (v0.5.7 legacy fallback)
     # Only do this if base_rom is a valid directory to avoid hangs
@@ -114,17 +127,25 @@ def resolve_local_rom_path(game: dict, config_data: dict) -> Optional[Path]:
         if safe_game_name:
             all_candidates |= {safe_game_name + ext for ext in extensions}
         
+        best_file = None
+        best_size = -1
         for root, dirs, files in os.walk(base_rom):
-            # Check files first
             for f in files:
                 if f in all_candidates:
                     p_res = Path(root) / f
                     if not is_excluded(p_res):
-                        return p_res
-            # Check directories (for folder-based fallbacks like PS3)
+                        try:
+                            size = p_res.stat().st_size
+                        except Exception:
+                            size = 0
+                        if size > best_size:
+                            best_size = size
+                            best_file = p_res
             for d in dirs:
                 if d == stem:
                     return Path(root) / d
+        if best_file:
+            return best_file
                 
     return None
 
