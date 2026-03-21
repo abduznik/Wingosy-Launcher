@@ -21,12 +21,16 @@
 - Parallel library loading for large collections
 - Configurable sync interval and log level
 
-## What's New in v0.6.4 (2026-03-17)
+## What's New in v0.6.5 (2026-03-21)
 ### Fixed
-- **Download Stall at 100%**: Downloads that failed after completing no longer freeze the UI — the Play button now appears correctly and the registry entry is cleaned up
-- **Duplicate Downloads**: Re-clicking download on a stalled game no longer creates duplicate entries in the download list
-- **PCSX2 Save Path**: Save directory is now resolved correctly even before the memcards folder exists on disk
-- **Save Strategy Robustness**: FolderStrategy and PCSX2Strategy no longer return None for configured-but-uncreated save directories
+- **Startup Hang on Unreachable Server**: Wingosy no longer freezes indefinitely if the RomM server is down — connection failures now report immediately
+- **Game Card Click Area**: Clicking anywhere on a game card (not just the image) now correctly opens the game detail panel
+- **No Cover Placeholder**: Games without cover art now show a properly styled full-size placeholder matching the detail panel
+
+### Changed
+- **Uniform Card Grid**: Game cards are now all the same height for a clean, orderly library layout
+- **Eden Emulator Source**: Updated to the official Gitea release after the GitHub mirror was taken down
+- **RetroArch Download URL**: Fixed broken download link (wrong filename)
 
 ## What's New in v0.6.3 (2026-03-14)
 ### Added

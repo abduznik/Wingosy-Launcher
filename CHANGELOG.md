@@ -1,9 +1,15 @@
 # Changelog
 
-## v0.6.5 (Planned)
-- Auto-extraction of BIOS files from multi-file archives
-- BIOS download progress bars in manager UI
-- Dedicated BIOS management tab (independent of emulator list)
+## v0.6.5 (2026-03-21)
+### Fixed
+- Server connection timeout no longer causes infinite startup hang: ConnectTimeout now fails fast and shows an error message instead of retrying with a 300s fallback
+- Game cards now open correctly when clicking anywhere on the card, not just the image area
+- "No Cover" placeholder now fills the full card area and matches the style used in the game detail panel
+
+### Changed
+- Game cards now use uniform fixed height for an orderly grid layout; images scale with aspect ratio preserved and are centered within the card
+- Eden emulator source updated: switched from defunct GitHub mirror to official Gitea release (v0.2.0-rc2)
+- RetroArch stable download URL corrected (RetroArch.7z, was RetroArch_update.7z)
 
 ## v0.6.4 (2026-03-17)
 ### Fixed

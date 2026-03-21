@@ -7,16 +7,13 @@ EMULATOR_SOURCES = {
     "retroarch": {
         "type": "direct",
         "label": "RetroArch (Stable)",
-        "url": "https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/RetroArch_update.7z",
+        "url": "https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/RetroArch.7z",
         "exe_hint": "retroarch.exe"
     },
     "eden": {
-        "type": "github",
-        "repo": "eden-emulator/Releases",
-        "asset_filters": {
-            "required": ["windows", "msvc"],
-            "excluded": ["arm64", "macos", "android", "source", "mingw"]
-        },
+        "type": "direct",
+        "url": "https://git.eden-emu.dev/eden-emu/eden/releases/download/v0.2.0-rc2/Eden-Windows-v0.2.0-rc2-amd64-msvc-standard.zip",
+        "label": "Eden (Switch)",
         "exe_hint": "eden.exe"
     },
     "rpcs3": {

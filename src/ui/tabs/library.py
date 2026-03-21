@@ -117,6 +117,8 @@ class GameCard(QWidget):
 
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignCenter)
+        self.img_label.mousePressEvent = lambda e: self.mousePressEvent(e)
+        self.img_label.mouseReleaseEvent = lambda e: self.mouseReleaseEvent(e)
         layout.addWidget(self.img_label)
 
         # State Indicators
@@ -155,6 +157,8 @@ class GameCard(QWidget):
 
         self.title_label = QLabel()
         self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.mousePressEvent = lambda e: self.mousePressEvent(e)
+        self.title_label.mouseReleaseEvent = lambda e: self.mouseReleaseEvent(e)
         self.title_label.setStyleSheet("color: white; font-weight: bold; border: none;")
         self.title_label.setWordWrap(False)
         self.title_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -241,45 +245,40 @@ class GameCard(QWidget):
 
     def start_image_fetch(self, main_window, generation):
         url = self.client.get_cover_url(self.game)
-        if not url:
-            # Render a simple local placeholder — no network fetch needed
+        if url:
+            self.fetcher = ImageFetcher(self.game['id'], url)
+            self.fetcher.finished.connect(self.set_image)
+            self.fetcher.finished.connect(lambda gid, pix: main_window._on_image_fetched(self.fetcher, generation))
+            self.fetcher.start()
+            return self.fetcher
+        else:
             from PySide6.QtGui import QPainter, QFont
             from PySide6.QtCore import QRect
-            w = self.img_label.width() or 150
-            h = self.img_label.height() or 200
-            pixmap = QPixmap(w, h)
-            pixmap.fill(QColor("#2a2a3e"))
-            painter = QPainter(pixmap)
-            painter.setPen(QColor("#8888aa"))
-            painter.setFont(QFont("Arial", 11))
-            painter.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "No Cover")
-            painter.end()
-            self.img_label.setPixmap(pixmap)
-            return None
-        self.fetcher = ImageFetcher(self.game['id'], url)
-        self.fetcher.finished.connect(self.set_image)
-        self.fetcher.finished.connect(lambda gid, pix: main_window._on_image_fetched(self.fetcher, generation))
-        self.fetcher.start()
-        return self.fetcher
+            w = self.img_label.width()
+            h = self.img_label.height()
+            if w > 0 and h > 0:
+                pixmap = QPixmap(w, h)
+                pixmap.fill(QColor("#2a2a3e"))
+                painter = QPainter(pixmap)
+                painter.setPen(QColor("#8888aa"))
+                painter.setFont(QFont("Arial", 10, QFont.Bold))
+                painter.drawText(QRect(0, 0, w, h), Qt.AlignCenter, "No Cover")
+                painter.end()
+                self._full_pixmap = pixmap
+                self.img_label.setStyleSheet("")
+                self.img_label.setText("")
+                self.img_label.setPixmap(pixmap)
+        return None
 
     def set_image(self, game_id, pixmap):
         try:
             self._full_pixmap = pixmap
-            # Store detected aspect ratio in parent LibraryTab config (memory only)
-            if pixmap.width() > 0:
-                detected_ratio = pixmap.height() / pixmap.width()
-                p = self.parent()
-                while p and not isinstance(p, LibraryTab):
-                    p = p.parent()
-                if p:
-                    p.config.data["cover_aspect_ratio"] = detected_ratio
-            # Let _resize_all_cards handle all painting — it's the single source of truth
             w = self.img_label.width()
             h = self.img_label.height()
             if w > 0 and h > 0:
                 self.img_label.setPixmap(
                     pixmap.scaled(w, h,
-                        Qt.KeepAspectRatioByExpanding,
+                        Qt.KeepAspectRatio,
                         Qt.SmoothTransformation)
                 )
         except RuntimeError:
@@ -594,17 +593,16 @@ class LibraryTab(QWidget):
         self.apply_filters()
 
     def _get_card_size(self):
-        """Compute card width/height based on viewport width and cols setting."""
+        """Compute card width based on viewport width and cols setting. Height is dynamic per-card."""
         cols = max(1, int(self.config.get("cards_per_row", 6)))
-        spacing = self.grid_layout.horizontalSpacing() * (cols - 1) + 20    
+        spacing = self.grid_layout.horizontalSpacing() * (cols - 1) + 20
         available = self.scroll_area.viewport().width() - spacing
         w = max(100, available // cols)
-        aspect = float(self.config.get("cover_aspect_ratio", 1.5))
-        h = int(w * aspect)
+        h = int(w * 1.5)  # default height before image loads
         return w, h, cols
 
     def _resize_all_cards(self):
-        """Resize every rendered card to match current viewport width."""   
+        """Resize every rendered card to match current viewport width."""
         if not self._all_cards:
             return
         w, h, cols = self._get_card_size()
@@ -613,15 +611,15 @@ class LibraryTab(QWidget):
             for card in self._all_cards:
                 card.setFixedSize(w, h)
                 card.img_label.setFixedSize(w - 10, h - 30)
+                card.title_label.setFixedWidth(w - 10)
                 if card._full_pixmap:
                     card.img_label.setPixmap(
                         card._full_pixmap.scaled(
                             w - 10, h - 30,
-                            Qt.KeepAspectRatioByExpanding,
+                            Qt.KeepAspectRatio,
                             Qt.SmoothTransformation
                         )
                     )
-                card.title_label.setFixedWidth(w - 10)
         finally:
             self.grid_widget.setUpdatesEnabled(True)
 

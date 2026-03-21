@@ -195,27 +195,33 @@ class RomMClient:
             params = {"limit": limit, "offset": offset}
             try:
                 try:
-                    # Stage 1: Fast attempt
                     r = session.get(url, headers=self.get_auth_headers(),
                                     params=params, timeout=REQUEST_TIMEOUT, verify=CERTIFI_PATH)
+                except requests.exceptions.ConnectTimeout:
+                    # Server is unreachable — don't retry, fail immediately
+                    return None
                 except requests.exceptions.Timeout:
-                    # Stage 2: Slow attempt
+                    # Read timeout (server connected but slow) — retry once with long timeout
+                    if not retry:
+                        return None
                     if retry_callback:
                         retry_callback()
                     r = session.get(url, headers=self.get_auth_headers(),
                                     params=params, timeout=(300, 300), verify=CERTIFI_PATH)
-                
+
                 if r.status_code == 401:
                     return "REAUTH_REQUIRED"
                 if r.status_code != 200:
                     return None
-                
+
                 data = r.json()
                 items = (data.get("items", []) if isinstance(data, dict)
                          else data if isinstance(data, list) else [])
                 total = (data.get("total") or data.get("count") or 0
                          if isinstance(data, dict) else len(items))
                 return {"items": items, "total": total}
+            except requests.exceptions.ConnectTimeout:
+                return None
             except Exception as e:
                 if retry:
                     print(f"[API] Retry page offset {offset} due to error: {e}")
