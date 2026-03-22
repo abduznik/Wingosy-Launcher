@@ -295,6 +295,8 @@ class WingosyMainWindow(QMainWindow):
                 self.log("🔄 Loading library...")
         else:
             self.log("🔄 Force refresh — fetching from server...")
+            # Save installed flags before clearing so they survive the refresh
+            self._saved_local_exists = {g['id'] for g in self.all_games if g.get('_local_exists')}
             self.all_games = []
             self.library_tab.populate_grid([]) # Clear grid for fresh fetch
 
@@ -323,12 +325,12 @@ class WingosyMainWindow(QMainWindow):
         is_first_batch = (len(self.all_games) == 0 or len(self.all_games) == len(batch))
         
         if is_first_batch:
-            already_found = {g['id'] for g in self.all_games if g.get('_local_exists')}
+            already_found = getattr(self, '_saved_local_exists', set()) | {g['id'] for g in self.all_games if g.get('_local_exists')}
             self.all_games = list(batch)
             for g in self.all_games:
                 if g['id'] in already_found:
                     g['_local_exists'] = True
-            self.library_tab.populate_grid(self.all_games)
+            self.library_tab.apply_filters()
         else:
             # Append subsequent batches
             self.all_games.extend(batch)
