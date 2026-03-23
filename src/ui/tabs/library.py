@@ -658,9 +658,9 @@ class LibraryTab(QWidget):
         print(f"[Library] Threshold hit — loading next batch. Pending: {len(self._pending_games)}")
         self._is_loading_batch = True
         self._render_next_batch()
-        # Re-apply install filter to newly rendered cards (show/hide path, no rebuild)
+        # Apply install filter to newly rendered cards without resetting generations
         if self.current_install_filter != "all":
-            self.apply_filters()
+            self._apply_install_filter_to_rendered()
 
     def _set_install_filter(self, filter_id):
         self.current_install_filter = filter_id
@@ -734,12 +734,19 @@ class LibraryTab(QWidget):
                 {c.game.get('id') for c in self._all_cards} |
                 {g.get('id') for g in self._pending_games}
             )
-            if any(g.get('id') not in all_known_ids for g in base_filtered):
-                # New server data — rebuild with full platform set, then re-filter
-                self.populate_grid(base_filtered)
-                if self.current_install_filter != "all":
-                    self.apply_filters()
-                return
+            missing_games = [g for g in base_filtered if g.get('id') not in all_known_ids]
+            if missing_games:
+                # New server batch arrived — add to _pending_games (sorted) rather than
+                # triggering an expensive full rebuild on every batch. A clean rebuild
+                # happens once in force_library_rebuild() when the fetch completes.
+                rendered_ids = {c.game.get('id') for c in self._all_cards}
+                self._pending_games = sorted(
+                    [g for g in self._pending_games + missing_games
+                     if g.get('id') not in rendered_ids],
+                    key=sort_key
+                )
+                # Re-sort rendered cards so the reflow below uses correct order
+                self._all_cards.sort(key=lambda c: sort_key(c.game))
 
             # Same platform — just show/hide existing cards and REFLOW them
             self.grid_widget.setUpdatesEnabled(False)
@@ -793,11 +800,89 @@ class LibraryTab(QWidget):
             # can freely show/hide without needing a rebuild on every filter switch.
             self.populate_grid(base_filtered)
             if self.current_install_filter != "all":
-                # apply_filters will take the show/hide path now that platform is set
-                self.apply_filters()
+                # Use the non-destructive helper so image fetch generations aren't reset
+                self._apply_install_filter_to_rendered()
             return
 
         print(f"[Library] Filter → {len(filtered)} games (platform='{platform}' search='{text}')")
+
+    def _apply_install_filter_to_rendered(self):
+        """Show/hide already-rendered cards according to the active install filter.
+
+        Unlike apply_filters(), this does NOT increment _filter_generation or
+        _render_generation, so in-progress image fetches are not cancelled.
+        """
+        from src import download_registry
+
+        filtered_ids = set()
+        for card in self._all_cards:
+            try:
+                g = card.game
+                is_installed = (g.get('_local_exists', False) or
+                                download_registry.get(str(g.get('id'))) is not None)
+                if self.current_install_filter == "all":
+                    filtered_ids.add(g.get('id'))
+                elif self.current_install_filter == "installed" and is_installed:
+                    filtered_ids.add(g.get('id'))
+                elif self.current_install_filter == "not_installed" and not is_installed:
+                    filtered_ids.add(g.get('id'))
+            except (RuntimeError, AttributeError):
+                continue
+
+        self.grid_widget.setUpdatesEnabled(False)
+        try:
+            visible_cards = []
+            for card in self._all_cards:
+                try:
+                    visible = card.game.get('id') in filtered_ids
+                    card.setVisible(visible)
+                    card.set_selected(False)
+                    if visible:
+                        visible_cards.append(card)
+                except (RuntimeError, AttributeError):
+                    continue
+
+            # Reflow: clear layout positions, re-add only visible cards
+            while self.grid_layout.count():
+                item = self.grid_layout.takeAt(0)
+                if item and item.widget() and not isinstance(item.widget(), GameCard):
+                    try:
+                        item.widget().hide()
+                        item.widget().deleteLater()
+                    except (RuntimeError, AttributeError):
+                        pass
+
+            _, _, cols = self._get_card_size()
+            for idx, card in enumerate(visible_cards):
+                self.grid_layout.addWidget(card, idx // cols, idx % cols)
+
+            if not visible_cards:
+                self.show_empty_message("No games match your search.")
+            elif self._pending_games:
+                # Re-add load-more indicator for remaining pending games
+                remaining = len(self._pending_games)
+                self._load_more_label = QLabel(
+                    f"⬇ Scroll down to load {remaining} more games...")
+                self._load_more_label.setAlignment(Qt.AlignCenter)
+                self._load_more_label.setStyleSheet(
+                    "color: #1e88e5; font-size: 13px; "
+                    "padding: 20px; background: #1a1a1a;")
+                next_row = (len(visible_cards) + cols - 1) // cols
+                self.grid_layout.addWidget(
+                    self._load_more_label, next_row, 0, 1, cols)
+        finally:
+            self.grid_widget.setUpdatesEnabled(True)
+
+    def force_library_rebuild(self):
+        """Trigger one clean grid rebuild after a full library fetch.
+
+        Clears the cached platform so apply_filters() treats it as a platform
+        change and calls populate_grid() with the fully sorted game list, then
+        applies the active install filter via _apply_install_filter_to_rendered().
+        """
+        if hasattr(self, '_current_platform'):
+            del self._current_platform
+        self.apply_filters()
 
     def update_game_local_status(self, game_id, exists):
         """Dynamically updates a GameCard's checkmark status."""

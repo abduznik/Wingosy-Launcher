@@ -368,8 +368,8 @@ class WingosyMainWindow(QMainWindow):
                 g['_local_exists'] = True
 
         self._update_platform_filter(res)
-        # Final render to ensure everything is in place
-        self.library_tab.apply_filters()
+        # One clean rebuild now that all games are available and fully sorted
+        self.library_tab.force_library_rebuild()
         self._start_local_discovery(self.all_games)
 
     def _update_platform_filter(self, games):
