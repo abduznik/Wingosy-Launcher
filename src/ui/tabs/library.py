@@ -272,6 +272,8 @@ class GameCard(QWidget):
 
     def set_image(self, game_id, pixmap):
         try:
+            if pixmap.isNull():
+                return  # fetch failed; keep existing placeholder
             self._full_pixmap = pixmap
             w = self.img_label.width()
             h = self.img_label.height()

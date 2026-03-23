@@ -265,11 +265,16 @@ class WingosyMainWindow(QMainWindow):
             return
         if fetcher in self.active_image_fetchers:
             self.active_image_fetchers.remove(fetcher)
-        if self.image_fetch_queue:
+        # Keep draining until a card with a cover URL is found, so the chain
+        # slot is never permanently lost due to games with no cover art.
+        while self.image_fetch_queue:
             next_card = self.image_fetch_queue.pop(0)
             new_fetcher = next_card.start_image_fetch(self, self.fetch_generation)
             if new_fetcher:
                 self.active_image_fetchers.append(new_fetcher)
+                break
+            # start_image_fetch returned None (no URL) and rendered a placeholder;
+            # continue to the next queued card
 
     def fetch_library_and_populate(self, force_refresh=False):
         """
