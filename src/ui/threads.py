@@ -87,8 +87,12 @@ class ImageFetcher(QThread):
                 img = QImage()
                 if img.loadFromData(r.content):
                     self.finished.emit(self.game_id, QPixmap.fromImage(img))
+                    return
         except Exception:
             pass
+        # Always emit finished (with null pixmap) so the drain chain slot
+        # is never permanently lost due to network failures or bad image data.
+        self.finished.emit(self.game_id, QPixmap())
 
 class GameDescriptionFetcher(QThread):
     finished = Signal(str)

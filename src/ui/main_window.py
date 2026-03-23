@@ -265,18 +265,26 @@ class WingosyMainWindow(QMainWindow):
             return
         if fetcher in self.active_image_fetchers:
             self.active_image_fetchers.remove(fetcher)
-        if self.image_fetch_queue:
+        # Keep draining until a card with a cover URL is found, so the chain
+        # slot is never permanently lost due to games with no cover art.
+        while self.image_fetch_queue:
             next_card = self.image_fetch_queue.pop(0)
             new_fetcher = next_card.start_image_fetch(self, self.fetch_generation)
             if new_fetcher:
                 self.active_image_fetchers.append(new_fetcher)
+                break
+            # start_image_fetch returned None (no URL) and rendered a placeholder;
+            # continue to the next queued card
 
     def fetch_library_and_populate(self, force_refresh=False):
         """
-        force_refresh=False (default): show cache instantly, 
+        force_refresh=False (default): show cache instantly,
                                         refresh in background silently.
         force_refresh=True: wipe cache display, fetch fresh from server.
         """
+        import traceback
+        print(f"[DEBUG] fetch_library_and_populate called (force_refresh={force_refresh})")
+        traceback.print_stack(limit=6)
         self.library_tab.refresh_btn.setEnabled(False)
         self._library_fetch_done = False
         
@@ -295,6 +303,8 @@ class WingosyMainWindow(QMainWindow):
                 self.log("🔄 Loading library...")
         else:
             self.log("🔄 Force refresh — fetching from server...")
+            # Save installed flags before clearing so they survive the refresh
+            self._saved_local_exists = {g['id'] for g in self.all_games if g.get('_local_exists')}
             self.all_games = []
             self.library_tab.populate_grid([]) # Clear grid for fresh fetch
 
@@ -313,22 +323,17 @@ class WingosyMainWindow(QMainWindow):
     def _on_library_batch(self, batch, total):
         """Called as each page arrives from parallel fetcher."""
         if self._library_fetch_done: return
-        
-        # Avoid duplication if we are building on top of cache 
-        # (server data replaces cache batch-by-batch)
-        # For simplicity in this progressive view, if we're not force-refreshing,
-        # we might just wait for final fetch. But user wants progressive.
-        
-        # If this is the FIRST batch of a fresh fetch or first launch:
-        is_first_batch = (len(self.all_games) == 0 or len(self.all_games) == len(batch))
+
+        is_first_batch = (len(self.all_games) == 0)
+        print(f"[DEBUG] _on_library_batch: batch={len(batch)}, total={total}, all_games={len(self.all_games)}, is_first_batch={is_first_batch}")
         
         if is_first_batch:
-            already_found = {g['id'] for g in self.all_games if g.get('_local_exists')}
+            already_found = getattr(self, '_saved_local_exists', set()) | {g['id'] for g in self.all_games if g.get('_local_exists')}
             self.all_games = list(batch)
             for g in self.all_games:
                 if g['id'] in already_found:
                     g['_local_exists'] = True
-            self.library_tab.populate_grid(self.all_games)
+            self.library_tab.apply_filters()
         else:
             # Append subsequent batches
             self.all_games.extend(batch)
@@ -366,7 +371,9 @@ class WingosyMainWindow(QMainWindow):
                 g['_local_exists'] = True
 
         self._update_platform_filter(res)
-        # Final render to ensure everything is in place
+        # Use apply_filters (show/hide + pending update path) rather than
+        # force_library_rebuild so we don't trigger a second full populate_grid
+        # rebuild when the first batch already built the grid.
         self.library_tab.apply_filters()
         self._start_local_discovery(self.all_games)
 
