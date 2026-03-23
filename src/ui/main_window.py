@@ -322,7 +322,10 @@ class WingosyMainWindow(QMainWindow):
         # we might just wait for final fetch. But user wants progressive.
         
         # If this is the FIRST batch of a fresh fetch or first launch:
-        is_first_batch = (len(self.all_games) == 0 or len(self.all_games) == len(batch))
+        # Only treat as the first batch when all_games is truly empty (force refresh
+        # or first launch). The old "== len(batch)" condition wrongly triggered for any
+        # subsequent batch that happened to be the same size, resetting all_games.
+        is_first_batch = (len(self.all_games) == 0)
         
         if is_first_batch:
             already_found = getattr(self, '_saved_local_exists', set()) | {g['id'] for g in self.all_games if g.get('_local_exists')}
@@ -368,8 +371,10 @@ class WingosyMainWindow(QMainWindow):
                 g['_local_exists'] = True
 
         self._update_platform_filter(res)
-        # One clean rebuild now that all games are available and fully sorted
-        self.library_tab.force_library_rebuild()
+        # Use apply_filters (show/hide + pending update path) rather than
+        # force_library_rebuild so we don't trigger a second full populate_grid
+        # rebuild when the first batch already built the grid.
+        self.library_tab.apply_filters()
         self._start_local_discovery(self.all_games)
 
     def _update_platform_filter(self, games):

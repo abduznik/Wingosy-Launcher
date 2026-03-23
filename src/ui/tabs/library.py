@@ -935,6 +935,8 @@ class LibraryTab(QWidget):
                 pass
         self.main_window.active_image_fetchers = []
         self.main_window.image_fetch_queue = []
+        # New generation so queued fetches from the previous grid are discarded
+        self.main_window.fetch_generation += 1
 
         self._all_cards = []
         self._pending_games = list(games)  # full list, render in batches   
@@ -1060,8 +1062,9 @@ class LibraryTab(QWidget):
 
         print(f"[Library] Cards: {len(self._all_cards)} loaded, {len(self._pending_games)} pending")
 
-        # Queue image fetches for newly added cards (first 12 overall only) 
-        self.main_window.fetch_generation += 1
+        # Queue image fetches for newly added cards (first 12 overall only)
+        # fetch_generation is set once per populate_grid() call, not per batch,
+        # so the queue-drain chain is never interrupted by lazy scroll loads.
         my_fetch_gen = self.main_window.fetch_generation
         start_idx = len(self._all_cards) - len(batch)
         for i, card in enumerate(self._all_cards[start_idx:]):
