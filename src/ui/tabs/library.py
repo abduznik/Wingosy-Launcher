@@ -658,6 +658,9 @@ class LibraryTab(QWidget):
         print(f"[Library] Threshold hit — loading next batch. Pending: {len(self._pending_games)}")
         self._is_loading_batch = True
         self._render_next_batch()
+        # Re-apply install filter to newly rendered cards (show/hide path, no rebuild)
+        if self.current_install_filter != "all":
+            self.apply_filters()
 
     def _set_install_filter(self, filter_id):
         self.current_install_filter = filter_id
@@ -712,7 +715,9 @@ class LibraryTab(QWidget):
                 filtered.append(g)
 
         # Always sort alphabetically by game name — handle potential None/empty names
-        filtered.sort(key=lambda g: str(g.get('name', '') or g.get('fs_name', '')).lower())
+        sort_key = lambda g: str(g.get('name', '') or g.get('fs_name', '')).lower()
+        base_filtered.sort(key=sort_key)
+        filtered.sort(key=sort_key)
 
         # RACE CONDITION GUARD: If a newer filter started while we were sorting, bail
         if my_filter_gen != self._filter_generation:
@@ -724,6 +729,18 @@ class LibraryTab(QWidget):
         )
 
         if not platform_changed and self._all_cards:
+            # Check if new games arrived from the server that have no cards yet
+            all_known_ids = (
+                {c.game.get('id') for c in self._all_cards} |
+                {g.get('id') for g in self._pending_games}
+            )
+            if any(g.get('id') not in all_known_ids for g in base_filtered):
+                # New server data — rebuild with full platform set, then re-filter
+                self.populate_grid(base_filtered)
+                if self.current_install_filter != "all":
+                    self.apply_filters()
+                return
+
             # Same platform — just show/hide existing cards and REFLOW them
             self.grid_widget.setUpdatesEnabled(False)
             try:
@@ -771,8 +788,14 @@ class LibraryTab(QWidget):
             finally:
                 self.grid_widget.setUpdatesEnabled(True)
         else:
-            # Platform changed — rebuild grid
-            self.populate_grid(filtered)
+            # Platform changed — rebuild grid with full platform set (no install filter)
+            # so _all_cards/_pending_games hold all platform games and the install filter
+            # can freely show/hide without needing a rebuild on every filter switch.
+            self.populate_grid(base_filtered)
+            if self.current_install_filter != "all":
+                # apply_filters will take the show/hide path now that platform is set
+                self.apply_filters()
+            return
 
         print(f"[Library] Filter → {len(filtered)} games (platform='{platform}' search='{text}')")
 
