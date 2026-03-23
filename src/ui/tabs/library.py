@@ -793,6 +793,18 @@ class LibraryTab(QWidget):
                 # 5. Handle "No games match" case
                 if not visible_cards:
                     self.show_empty_message("No games match your search.")
+                elif self._pending_games:
+                    # Re-add load-more label (it was removed when the layout was cleared above)
+                    remaining = len(self._pending_games)
+                    self._load_more_label = QLabel(
+                        f"⬇ Scroll down to load {remaining} more games...")
+                    self._load_more_label.setAlignment(Qt.AlignCenter)
+                    self._load_more_label.setStyleSheet(
+                        "color: #1e88e5; font-size: 13px; "
+                        "padding: 20px; background: #1a1a1a;")
+                    next_row = (self._visible_card_count + cols - 1) // cols
+                    self.grid_layout.addWidget(
+                        self._load_more_label, next_row, 0, 1, cols)
 
             finally:
                 self.grid_widget.setUpdatesEnabled(True)
@@ -1048,6 +1060,7 @@ class LibraryTab(QWidget):
             for i, game in enumerate(batch):
                 # RACE CONDITION GUARD
                 if generation != self._render_generation or filter_generation != self._filter_generation:
+                    self._is_loading_batch = False
                     return
 
                 try:
