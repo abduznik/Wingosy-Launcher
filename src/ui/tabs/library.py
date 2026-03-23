@@ -660,9 +660,6 @@ class LibraryTab(QWidget):
         print(f"[Library] Threshold hit — loading next batch. Pending: {len(self._pending_games)}")
         self._is_loading_batch = True
         self._render_next_batch()
-        # Apply install filter to newly rendered cards without resetting generations
-        if self.current_install_filter != "all":
-            self._apply_install_filter_to_rendered()
 
     def _set_install_filter(self, filter_id):
         self.current_install_filter = filter_id
@@ -782,28 +779,28 @@ class LibraryTab(QWidget):
                 for idx, card in enumerate(visible_cards):
                     # RACE CONDITION GUARD
                     if my_filter_gen != self._filter_generation: return
-                    
+
                     row = idx // cols
                     col = idx % cols
                     try:
                         self.grid_layout.addWidget(card, row, col)
                     except (RuntimeError, AttributeError):
                         continue
-                
-                # 4. Handle "No games match" case
+
+                # 4. Update visible count for future batch renders
+                self._visible_card_count = len(visible_cards)
+
+                # 5. Handle "No games match" case
                 if not visible_cards:
                     self.show_empty_message("No games match your search.")
 
             finally:
                 self.grid_widget.setUpdatesEnabled(True)
         else:
-            # Platform changed — rebuild grid with full platform set (no install filter)
-            # so _all_cards/_pending_games hold all platform games and the install filter
-            # can freely show/hide without needing a rebuild on every filter switch.
+            # Platform changed — rebuild grid with full platform set.
+            # _render_next_batch now applies the install filter per-card directly,
+            # so no post-render reflow is needed here.
             self.populate_grid(base_filtered)
-            if self.current_install_filter != "all":
-                # Use the non-destructive helper so image fetch generations aren't reset
-                self._apply_install_filter_to_rendered()
             return
 
         print(f"[Library] Filter → {len(filtered)} games (platform='{platform}' search='{text}')")
@@ -941,7 +938,8 @@ class LibraryTab(QWidget):
         self.main_window.fetch_generation += 1
 
         self._all_cards = []
-        self._pending_games = list(games)  # full list, render in batches   
+        self._visible_card_count = 0  # tracks cards actually in the grid layout
+        self._pending_games = list(games)  # full list, render in batches
         self._scroll_debounce.stop()  # cancel any pending debounce on grid reset
         self._is_loading_batch = False
         self._current_platform = self.platform_filter.currentText()
@@ -986,8 +984,19 @@ class LibraryTab(QWidget):
         self._is_loading_batch = True
         self._render_next_batch(my_gen, my_filter_gen)
 
+    def _matches_install_filter(self, game):
+        """Return True if game should be visible under the active install filter."""
+        if self.current_install_filter == "all":
+            return True
+        from src import download_registry
+        is_installed = (game.get('_local_exists', False) or
+                        download_registry.get(str(game.get('id'))) is not None)
+        if self.current_install_filter == "installed":
+            return is_installed
+        return not is_installed
+
     def _render_next_batch(self, generation=None, filter_generation=None):
-        """Render the next LOAD_BATCH pending games into the grid."""       
+        """Render the next LOAD_BATCH pending games into the grid."""
         # Use current generation if not specified
         if generation is None:
             generation = self._render_generation
@@ -1031,10 +1040,10 @@ class LibraryTab(QWidget):
 
         self.grid_widget.setUpdatesEnabled(False)
         try:
-            # Calculate starting row/col from existing card count
-            total_so_far = len(self._all_cards)
-            row = total_so_far // cols_per_row
-            col = total_so_far % cols_per_row
+            # Calculate starting row/col from VISIBLE card count (not total)
+            # so hidden cards don't create empty grid slots
+            row = self._visible_card_count // cols_per_row
+            col = self._visible_card_count % cols_per_row
 
             for i, game in enumerate(batch):
                 # RACE CONDITION GUARD
@@ -1046,23 +1055,30 @@ class LibraryTab(QWidget):
                     if game.get('_local_exists'):
                         card.set_local_exists(True)
                     card.clicked.connect(lambda g=game: self.open_detail(g))
-        
+
                     card.setFixedSize(card_w, card_h)
-                    card.img_label.setFixedSize(card_w - 10, card_h - 30)       
+                    card.img_label.setFixedSize(card_w - 10, card_h - 30)
                     card.title_label.setFixedWidth(card_w - 10)
-                    self.grid_layout.addWidget(card, row, col)
+
+                    is_visible = self._matches_install_filter(game)
+                    if not is_visible:
+                        card.setVisible(False)
+
                     self._all_cards.append(card)
+
+                    if is_visible:
+                        self.grid_layout.addWidget(card, row, col)
+                        self._visible_card_count += 1
+                        col += 1
+                        if col >= cols_per_row:
+                            col = 0
+                            row += 1
                 except (RuntimeError, AttributeError):
                     continue
-
-                col += 1
-                if col >= cols_per_row:
-                    col = 0
-                    row += 1
         finally:
             self.grid_widget.setUpdatesEnabled(True)
 
-        print(f"[Library] Cards: {len(self._all_cards)} loaded, {len(self._pending_games)} pending")
+        print(f"[Library] Cards: {len(self._all_cards)} total ({self._visible_card_count} visible), {len(self._pending_games)} pending")
 
         # Queue image fetches for newly added cards (first 12 overall only)
         # fetch_generation is set once per populate_grid() call, not per batch,
@@ -1094,14 +1110,14 @@ class LibraryTab(QWidget):
                 return
 
             remaining = len(self._pending_games)
-            self._load_more_label = QLabel(f"⬇ Scroll down to load {remaining} more games...")       
+            self._load_more_label = QLabel(f"⬇ Scroll down to load {remaining} more games...")
             self._load_more_label.setAlignment(Qt.AlignCenter)
             self._load_more_label.setStyleSheet(
                 "color: #1e88e5; font-size: 13px; "
                 "padding: 20px; background: #1a1a1a;")
-            next_row = (len(self._all_cards) + cols_per_row - 1) // cols_per_row
+            next_row = (self._visible_card_count + cols_per_row - 1) // cols_per_row
             self.grid_layout.addWidget(
-                self._load_more_label, next_row, 0, 1, cols_per_row)        
+                self._load_more_label, next_row, 0, 1, cols_per_row)
 
         self._is_loading_batch = False
 
