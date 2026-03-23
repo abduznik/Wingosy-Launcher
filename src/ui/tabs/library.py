@@ -923,6 +923,10 @@ class LibraryTab(QWidget):
         self.apply_filters()
 
     def populate_grid(self, games):
+        import traceback
+        print(f"[DEBUG] populate_grid called with {len(games)} games")
+        traceback.print_stack(limit=8)
+
         # Reset refresh button style
         self.refresh_btn.setStyleSheet("")
         self.refresh_btn.setText("🔄 Refresh")

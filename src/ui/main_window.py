@@ -278,10 +278,13 @@ class WingosyMainWindow(QMainWindow):
 
     def fetch_library_and_populate(self, force_refresh=False):
         """
-        force_refresh=False (default): show cache instantly, 
+        force_refresh=False (default): show cache instantly,
                                         refresh in background silently.
         force_refresh=True: wipe cache display, fetch fresh from server.
         """
+        import traceback
+        print(f"[DEBUG] fetch_library_and_populate called (force_refresh={force_refresh})")
+        traceback.print_stack(limit=6)
         self.library_tab.refresh_btn.setEnabled(False)
         self._library_fetch_done = False
         
@@ -320,17 +323,9 @@ class WingosyMainWindow(QMainWindow):
     def _on_library_batch(self, batch, total):
         """Called as each page arrives from parallel fetcher."""
         if self._library_fetch_done: return
-        
-        # Avoid duplication if we are building on top of cache 
-        # (server data replaces cache batch-by-batch)
-        # For simplicity in this progressive view, if we're not force-refreshing,
-        # we might just wait for final fetch. But user wants progressive.
-        
-        # If this is the FIRST batch of a fresh fetch or first launch:
-        # Only treat as the first batch when all_games is truly empty (force refresh
-        # or first launch). The old "== len(batch)" condition wrongly triggered for any
-        # subsequent batch that happened to be the same size, resetting all_games.
+
         is_first_batch = (len(self.all_games) == 0)
+        print(f"[DEBUG] _on_library_batch: batch={len(batch)}, total={total}, all_games={len(self.all_games)}, is_first_batch={is_first_batch}")
         
         if is_first_batch:
             already_found = getattr(self, '_saved_local_exists', set()) | {g['id'] for g in self.all_games if g.get('_local_exists')}
